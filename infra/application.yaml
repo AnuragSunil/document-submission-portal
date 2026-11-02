@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Application Stack for Document Submission Portal.
+  Provisions ECS cluster, Application Load Balancer, Target Group, ECS Task & Execution Roles,
+  Fargate Task Definition, and Fargate Service with zero VPC endpoint cost architecture.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dsp
+    Description: Environment name prefix.
+
+  ImageTag:
+    Type: String
+    Default: latest
+    Description: Docker image tag for the backend container in ECR.
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 0
+    Description: Number of desired backend ECS task instances.
+
+Resources:
+  # =========================================================================
+  # ECS Cluster
+  # =========================================================================
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub '${EnvironmentName}-cluster'
+
+  # =========================================================================
+  # Application Load Balancer, Target Group & Listener
+  # =========================================================================
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${EnvironmentName}-alb'
+      Scheme: internet-facing
+      Type: application
+      Subnets: !Split [',', !ImportValue dsp-network-PublicSubnets]
+      SecurityGroups:
+        - !ImportValue dsp-network-ALBSecurityGroup
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${EnvironmentName}-tg'
+      Port: 8000
+      Protocol: HTTP
+      VpcId: !ImportValue dsp-network-VPCID
+      TargetType: ip
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # =========================================================================
+  # IAM Roles (Task Execution Role & Scoped Task Role)
+  # =========================================================================
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-task-execution-role'
+      Description: IAM role for ECS task execution to pull container images and push logs
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-task-role'
+      Description: IAM role assumed by the container application for S3 and Secrets Manager access
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub '${EnvironmentName}-task-permissions'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3ObjectAccess
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub
+                  - '${BucketArn}/*'
+                  - BucketArn: !ImportValue dsp-data-DocumentsBucketArn
+              - Sid: S3BucketAccess
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !ImportValue dsp-data-DocumentsBucketArn
+              - Sid: SecretsManagerAccess
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !ImportValue dsp-data-DBSecretArn
+
+  # =========================================================================
+  # ECS Task Definition
+  # =========================================================================
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${EnvironmentName}-backend-task'
+      RequiresCompatibilities:
+        - FARGATE
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt ECSTaskRole.Arn
+      RuntimePlatform:
+        OperatingSystemFamily: LINUX
+        CpuArchitecture: X86_64
+      ContainerDefinitions:
+        - Name: !Sub '${EnvironmentName}-backend'
+          Image: !Sub
+            - '${ECRUri}:${ImageTag}'
+            - ECRUri: !ImportValue dsp-cicd-ECRRepoUri
+          PortMappings:
+            - ContainerPort: 8000
+              Protocol: tcp
+          Environment:
+            - Name: BUCKET_NAME
+              Value: !ImportValue dsp-data-DocumentsBucketName
+            - Name: DB_SECRET_ARN
+              Value: !ImportValue dsp-data-DBSecretArn
+            - Name: DB_NAME
+              Value: dspdb
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !ImportValue dsp-data-AppLogGroupName
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  # =========================================================================
+  # ECS Fargate Service
+  # =========================================================================
+  # Tasks are in public subnets with a public IP to avoid VPC endpoint cost; ecs-sg only accepts port 8000 from alb-sg.
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      ServiceName: !Sub '${EnvironmentName}-service'
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets: !Split [',', !ImportValue dsp-network-PublicSubnets]
+          SecurityGroups:
+            - !ImportValue dsp-network-ECSSecurityGroup
+          AssignPublicIp: ENABLED
+      LoadBalancers:
+        - TargetGroupArn: !Ref TargetGroup
+          ContainerName: !Sub '${EnvironmentName}-backend'
+          ContainerPort: 8000
+
+# =========================================================================
+# Outputs & Cross-Stack Exports
+# =========================================================================
+Outputs:
+  ALBDNSName:
+    Description: Public DNS name of the Application Load Balancer
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Export:
+      Name: dsp-application-ALBDNSName
+
+  ServiceName:
+    Description: Name of the ECS Fargate Service
+    Value: !GetAtt ECSService.Name
+
+  ClusterName:
+    Description: Name of the ECS Cluster
+    Value: !Ref ECSCluster
