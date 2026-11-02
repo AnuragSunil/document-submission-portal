@@ -5,145 +5,349 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Document Submission Portal</title>
   <style>
-    body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif; max-width: 960px; margin: 0 auto; padding: 24px; color: #1f2328; }
-    h1 { font-size: 22px; }
-    section { background: #f7f8fa; border: 1px solid #e5e7eb; border-radius: 6px; padding: 16px; margin-bottom: 20px; }
-    label { display: block; margin: 8px 0 4px; font-size: 13px; color: #57606a; }
-    input, select, button { font: inherit; padding: 6px 8px; }
-    input[type=text], input[type=file], select { width: 100%; box-sizing: border-box; }
-    button { background: #3b82d4; color: #fff; border: 0; border-radius: 4px; cursor: pointer; margin-top: 12px; }
-    button.small { margin: 0 4px 0 0; padding: 3px 8px; font-size: 12px; }
-    #stats span { margin-right: 16px; }
-    #msg { margin-top: 8px; font-size: 13px; }
-    table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e7eb; }
-    .toolbar { display: flex; gap: 8px; margin-bottom: 8px; }
+    :root {
+      --bg: #f4f6fa; --surface: #ffffff; --border: #e3e7ee; --text: #1b2430; --muted: #627086;
+      --accent: #2f6fdb; --accent-dark: #2459b4;
+      --ok: #1a7f4b; --ok-bg: #e4f6ec; --warn: #9a6700; --warn-bg: #fff4d6;
+      --info: #1f5fbf; --info-bg: #e3eefc; --bad: #b42318; --bad-bg: #fde8e6;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text);
+      font: 14px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif; }
+    header { background: var(--surface); border-bottom: 1px solid var(--border); }
+    .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+    header .wrap { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+    header h1 { font-size: 18px; margin: 0; }
+    header p { margin: 0; color: var(--muted); font-size: 13px; }
+    main { padding: 24px 0 48px; }
+
+    .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
+    .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+    .stat .n { font-size: 26px; font-weight: 600; line-height: 1.1; }
+    .stat .l { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+    .stat.UPLOADED .n { color: var(--info); } .stat.PROCESSING .n { color: var(--warn); }
+    .stat.PROCESSED .n { color: var(--ok); } .stat.FAILED .n { color: var(--bad); }
+
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; }
+    .card h2 { font-size: 15px; margin: 0; padding: 14px 20px; border-bottom: 1px solid var(--border); }
+    .card .body { padding: 20px; }
+
+    .grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; }
+    .drop { border: 2px dashed #c4cddd; border-radius: 8px; padding: 28px 16px; text-align: center;
+      color: var(--muted); cursor: pointer; transition: border-color .15s, background .15s; }
+    .drop.over, .drop:hover { border-color: var(--accent); background: #f3f7ff; }
+    .drop strong { color: var(--text); display: block; margin-bottom: 4px; }
+    .drop .picked { margin-top: 8px; color: var(--accent-dark); font-weight: 600; word-break: break-all; }
+    .drop input { display: none; }
+    .fields label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 4px; }
+    .fields .row { margin-bottom: 12px; }
+    input[type=text], select, textarea { width: 100%; font: inherit; padding: 8px 10px; background: #fff;
+      border: 1px solid #cfd6e3; border-radius: 6px; color: var(--text); }
+    input[type=text]:focus, select:focus, textarea:focus { outline: 2px solid #bcd3fa; border-color: var(--accent); }
+    textarea { resize: vertical; min-height: 64px; }
+
+    button { font: inherit; border: 0; border-radius: 6px; cursor: pointer; padding: 8px 16px;
+      background: var(--accent); color: #fff; font-weight: 600; }
+    button:hover:not(:disabled) { background: var(--accent-dark); }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    button.ghost { background: #fff; color: var(--text); border: 1px solid #cfd6e3; padding: 5px 10px; font-weight: 500; font-size: 12px; }
+    button.ghost:hover:not(:disabled) { background: #f1f4f9; }
+    .progress { height: 6px; background: #e5eaf3; border-radius: 3px; overflow: hidden; margin-top: 12px; display: none; }
+    .progress > div { height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+
+    .toolbar { display: flex; gap: 10px; padding: 14px 20px; border-bottom: 1px solid var(--border); }
+    .toolbar input { flex: 1; } .toolbar select { width: 180px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em;
+      padding: 10px 20px; background: #fafbfd; border-bottom: 1px solid var(--border); }
+    td { padding: 12px 20px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    tr:last-child td { border-bottom: 0; }
+    td.name { font-weight: 600; word-break: break-all; }
+    td.name small { display: block; font-weight: 400; color: var(--muted); }
+    td.actions { text-align: right; white-space: nowrap; }
+    td.actions button { margin-left: 6px; }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+    .badge.UPLOADED { background: var(--info-bg); color: var(--info); }
+    .badge.PROCESSING { background: var(--warn-bg); color: var(--warn); }
+    .badge.PROCESSED { background: var(--ok-bg); color: var(--ok); }
+    .badge.FAILED { background: var(--bad-bg); color: var(--bad); }
+    .empty { padding: 40px 20px; text-align: center; color: var(--muted); }
+
+    #toasts { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 10; }
+    .toast { background: #1b2430; color: #fff; padding: 10px 14px; border-radius: 6px; max-width: 360px; font-size: 13px; }
+    .toast.err { background: var(--bad); } .toast.ok { background: var(--ok); }
+
+    @media (max-width: 760px) {
+      .stats { grid-template-columns: repeat(2, 1fr); } .grid { grid-template-columns: 1fr; }
+      th:nth-child(2), td:nth-child(2), th:nth-child(5), td:nth-child(5) { display: none; }
+    }
   </style>
 </head>
 <body>
-  <h1>Document Submission Portal</h1>
-
-  <section>
-    <h2>Upload a document</h2>
-    <form id="upload-form">
-      <label for="file">File (PDF, DOCX, PNG, JPG; max 10 MB)</label>
-      <input id="file" type="file" accept=".pdf,.docx,.png,.jpg,.jpeg" required>
-      <label for="document_type">Document type</label>
-      <input id="document_type" type="text" maxlength="60" required>
-      <label for="description">Description (optional)</label>
-      <input id="description" type="text" maxlength="500">
-      <button type="submit">Upload</button>
-      <div id="msg"></div>
-    </form>
-  </section>
-
-  <section>
-    <h2>Status</h2>
-    <div id="stats"></div>
-  </section>
-
-  <section>
-    <h2>Documents</h2>
-    <div class="toolbar">
-      <input id="search" type="text" placeholder="Search filename or description">
-      <select id="status-filter">
-        <option value="">All statuses</option>
-        <option>UPLOADED</option>
-        <option>PROCESSING</option>
-        <option>PROCESSED</option>
-        <option>FAILED</option>
-      </select>
+  <header>
+    <div class="wrap">
+      <h1>Document Submission Portal</h1>
+      <p>Secure upload and processing tracker</p>
     </div>
-    <table>
-      <thead><tr><th>File</th><th>Type</th><th>Size</th><th>Status</th><th>Created</th><th></th></tr></thead>
-      <tbody id="docs"></tbody>
-    </table>
-  </section>
+  </header>
+
+  <main class="wrap">
+    <div class="stats" id="stats"></div>
+
+    <div class="card">
+      <h2>Upload a document</h2>
+      <div class="body">
+        <form id="upload-form" novalidate>
+          <div class="grid">
+            <label class="drop" id="drop" for="file">
+              <strong>Drag a file here or click to browse</strong>
+              PDF, DOCX, PNG or JPG, up to 10 MB
+              <div class="picked" id="picked"></div>
+              <input id="file" type="file" accept=".pdf,.docx,.png,.jpg,.jpeg">
+            </label>
+            <div class="fields">
+              <div class="row">
+                <label for="document_type">Document type</label>
+                <select id="document_type">
+                  <option value="">Select a type</option>
+                  <option>Identity</option>
+                  <option>Invoice</option>
+                  <option>Contract</option>
+                  <option>Report</option>
+                  <option>Other</option>
+                </select>
+              </div>
+              <div class="row">
+                <label for="description">Description (optional)</label>
+                <textarea id="description" maxlength="500"></textarea>
+              </div>
+              <button type="submit" id="submit">Upload</button>
+            </div>
+          </div>
+          <div class="progress" id="progress"><div id="bar"></div></div>
+        </form>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Documents</h2>
+      <div class="toolbar">
+        <input id="search" type="text" placeholder="Search by filename or description">
+        <select id="status-filter">
+          <option value="">All statuses</option>
+          <option>UPLOADED</option>
+          <option>PROCESSING</option>
+          <option>PROCESSED</option>
+          <option>FAILED</option>
+        </select>
+      </div>
+      <table>
+        <thead>
+          <tr><th>File</th><th>Type</th><th>Size</th><th>Status</th><th>Uploaded</th><th></th></tr>
+        </thead>
+        <tbody id="docs"></tbody>
+      </table>
+      <div class="empty" id="empty" style="display:none">No documents found.</div>
+    </div>
+  </main>
+
+  <div id="toasts"></div>
 
   <script>
+    const MAX_BYTES = 10 * 1024 * 1024;
+    const EXTS = [".pdf", ".docx", ".png", ".jpg", ".jpeg"];
     const $ = (id) => document.getElementById(id);
+    let selectedFile = null;
 
-    function cell(text) {
-      const td = document.createElement("td");
-      td.textContent = text;
-      return td;
+    function toast(text, kind) {
+      const t = document.createElement("div");
+      t.className = "toast " + (kind || "");
+      t.textContent = text;
+      $("toasts").appendChild(t);
+      setTimeout(() => t.remove(), 4000);
     }
 
-    function actionButton(label, handler) {
-      const b = document.createElement("button");
-      b.className = "small";
-      b.textContent = label;
-      b.addEventListener("click", handler);
-      return b;
+    function fmtSize(b) {
+      if (b < 1024) return b + " B";
+      if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
+      return (b / 1024 / 1024).toFixed(1) + " MB";
+    }
+
+    function fmtTime(iso) {
+      const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+      if (s < 60) return "just now";
+      if (s < 3600) return Math.floor(s / 60) + " min ago";
+      if (s < 86400) return Math.floor(s / 3600) + " h ago";
+      return new Date(iso).toLocaleDateString();
+    }
+
+    function el(tag, cls, text) {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+
+    function setFile(f) {
+      selectedFile = f || null;
+      $("picked").textContent = f ? f.name + " (" + fmtSize(f.size) + ")" : "";
+    }
+
+    function validate() {
+      if (!selectedFile) return "Choose a file to upload.";
+      const dot = selectedFile.name.lastIndexOf(".");
+      const ext = dot >= 0 ? selectedFile.name.slice(dot).toLowerCase() : "";
+      if (!EXTS.includes(ext)) return "Unsupported file type. Use PDF, DOCX, PNG or JPG.";
+      if (selectedFile.size > MAX_BYTES) return "File is larger than 10 MB.";
+      if (!$("document_type").value) return "Select a document type.";
+      return null;
     }
 
     async function loadStats() {
-      const r = await fetch("/api/stats");
-      if (!r.ok) return;
-      const s = await r.json();
-      const box = $("stats");
-      box.textContent = "";
-      for (const k of ["total", "UPLOADED", "PROCESSING", "PROCESSED", "FAILED"]) {
-        const span = document.createElement("span");
-        span.textContent = k + ": " + s[k];
-        box.appendChild(span);
+      try {
+        const r = await fetch("/api/stats");
+        if (!r.ok) return;
+        const s = await r.json();
+        const box = $("stats");
+        box.textContent = "";
+        for (const k of ["total", "UPLOADED", "PROCESSING", "PROCESSED", "FAILED"]) {
+          const c = el("div", "stat " + k);
+          c.appendChild(el("div", "n", String(s[k])));
+          c.appendChild(el("div", "l", k === "total" ? "Total" : k.charAt(0) + k.slice(1).toLowerCase()));
+          box.appendChild(c);
+        }
+      } catch (_) {}
+    }
+
+    async function download(d, btn) {
+      btn.disabled = true;
+      try {
+        const r = await fetch("/api/documents/" + d.document_id + "/download");
+        if (!r.ok) throw new Error();
+        const { url } = await r.json();
+        const a = document.createElement("a");
+        a.href = url;
+        a.rel = "noopener";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } catch (_) {
+        toast("Could not generate the download link.", "err");
+      } finally {
+        btn.disabled = false;
       }
+    }
+
+    async function retry(d, btn) {
+      btn.disabled = true;
+      const r = await fetch("/api/documents/" + d.document_id + "/retry", { method: "POST" });
+      toast(r.ok ? "Retry started." : "Retry failed.", r.ok ? "ok" : "err");
+      refresh();
     }
 
     async function loadDocs() {
       const p = new URLSearchParams();
       if ($("search").value) p.set("search", $("search").value);
       if ($("status-filter").value) p.set("status", $("status-filter").value);
-      const r = await fetch("/api/documents?" + p.toString());
-      if (!r.ok) return;
-      const docs = await r.json();
+      let docs;
+      try {
+        const r = await fetch("/api/documents?" + p.toString());
+        if (!r.ok) return;
+        docs = await r.json();
+      } catch (_) { return; }
+
       const body = $("docs");
       body.textContent = "";
+      $("empty").style.display = docs.length ? "none" : "block";
       for (const d of docs) {
         const tr = document.createElement("tr");
-        tr.appendChild(cell(d.original_filename));
-        tr.appendChild(cell(d.document_type));
-        tr.appendChild(cell((d.size_bytes / 1024).toFixed(1) + " KB"));
-        tr.appendChild(cell(d.status));
-        tr.appendChild(cell(new Date(d.created_at).toLocaleString()));
-        const actions = document.createElement("td");
-        actions.appendChild(actionButton("Download", async () => {
-          const res = await fetch("/api/documents/" + d.document_id + "/download");
-          if (res.ok) window.open((await res.json()).url, "_blank", "noopener");
-        }));
+
+        const name = el("td", "name", d.original_filename);
+        if (d.description) name.appendChild(el("small", "", d.description));
+        if (d.status === "FAILED" && d.error_message) name.appendChild(el("small", "", d.error_message));
+        tr.appendChild(name);
+
+        tr.appendChild(el("td", "", d.document_type));
+        tr.appendChild(el("td", "", fmtSize(d.size_bytes)));
+
+        const st = document.createElement("td");
+        st.appendChild(el("span", "badge " + d.status, d.status.charAt(0) + d.status.slice(1).toLowerCase()));
+        tr.appendChild(st);
+
+        tr.appendChild(el("td", "", fmtTime(d.created_at)));
+
+        const act = el("td", "actions");
         if (d.status === "FAILED") {
-          actions.appendChild(actionButton("Retry", async () => {
-            await fetch("/api/documents/" + d.document_id + "/retry", { method: "POST" });
-            refresh();
-          }));
+          const rb = el("button", "ghost", "Retry");
+          rb.addEventListener("click", () => retry(d, rb));
+          act.appendChild(rb);
         }
-        tr.appendChild(actions);
+        const db = el("button", "ghost", "Download");
+        db.addEventListener("click", () => download(d, db));
+        act.appendChild(db);
+        tr.appendChild(act);
+
         body.appendChild(tr);
       }
     }
 
     function refresh() { loadStats(); loadDocs(); }
 
+    function upload(fd) {
+      return new Promise((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", "/api/documents");
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) $("bar").style.width = Math.round((e.loaded / e.total) * 100) + "%";
+        };
+        xhr.onload = () => {
+          let detail = null;
+          try { detail = JSON.parse(xhr.responseText).detail; } catch (_) {}
+          resolve({ ok: xhr.status >= 200 && xhr.status < 300, detail });
+        };
+        xhr.onerror = () => resolve({ ok: false, detail: "Network error." });
+        xhr.send(fd);
+      });
+    }
+
+    $("file").addEventListener("change", (e) => setFile(e.target.files[0]));
+    const drop = $("drop");
+    ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+    ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+    drop.addEventListener("drop", (e) => { if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
+
     $("upload-form").addEventListener("submit", async (e) => {
       e.preventDefault();
+      const problem = validate();
+      if (problem) { toast(problem, "err"); return; }
+
       const fd = new FormData();
-      fd.append("file", $("file").files[0]);
+      fd.append("file", selectedFile);
       fd.append("document_type", $("document_type").value);
-      if ($("description").value) fd.append("description", $("description").value);
-      $("msg").textContent = "Uploading...";
-      const r = await fetch("/api/documents", { method: "POST", body: fd });
-      if (r.ok) {
-        $("msg").textContent = "Uploaded.";
+      if ($("description").value.trim()) fd.append("description", $("description").value.trim());
+
+      $("submit").disabled = true;
+      $("submit").textContent = "Uploading...";
+      $("progress").style.display = "block";
+      $("bar").style.width = "0";
+
+      const res = await upload(fd);
+
+      $("submit").disabled = false;
+      $("submit").textContent = "Upload";
+      $("progress").style.display = "none";
+      if (res.ok) {
+        toast("Document uploaded.", "ok");
         e.target.reset();
+        setFile(null);
       } else {
-        let detail = "Upload failed.";
-        try { detail = (await r.json()).detail || detail; } catch (_) {}
-        $("msg").textContent = detail;
+        toast(typeof res.detail === "string" ? res.detail : "Upload failed.", "err");
       }
       refresh();
     });
 
-    $("search").addEventListener("input", loadDocs);
+    let debounce;
+    $("search").addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(loadDocs, 250); });
     $("status-filter").addEventListener("change", loadDocs);
 
     refresh();
