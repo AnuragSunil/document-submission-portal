@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CI/CD Stack for Document Submission Portal.
+  Provisions ECR repository for backend container images, GitHub Actions OIDC provider,
+  and least-privilege IAM deploy role for automated builds and ECS deployments.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dsp
+    Description: Environment name prefix.
+
+  GitHubOrgRepo:
+    Type: String
+    Default: AnuragSunil/document-submission-portal
+    Description: Target GitHub organization and repository for OIDC trust (Owner/Repo).
+
+Resources:
+  # =========================================================================
+  # ECR Container Repository
+  # =========================================================================
+  ECRRepository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Delete
+    Properties:
+      RepositoryName: !Sub '${EnvironmentName}-backend'
+      EmptyOnDelete: true
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: >
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+  # =========================================================================
+  # GitHub Actions OIDC Identity Provider
+  # =========================================================================
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c5824a6f8483247dd418b7632b21232a4cf81c1
+
+  # =========================================================================
+  # GitHub Actions Deploy Role (Least-Privilege, No Long-Lived Keys)
+  # =========================================================================
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-github-deploy-role'
+      Description: IAM role assumed by GitHub Actions via OIDC to push images and update ECS service
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOIDCProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOrgRepo}:ref:refs/heads/main'
+      Policies:
+        - PolicyName: !Sub '${EnvironmentName}-github-deploy-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ECRGetAuthToken
+                Effect: Allow
+                # ecr:GetAuthorizationToken requires * resource per AWS IAM API specification
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: ECRRepoPush
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource: !GetAtt ECRRepository.Arn
+              - Sid: ECSDeployService
+                Effect: Allow
+                Action:
+                  - ecs:UpdateService
+                  - ecs:DescribeServices
+                Resource: !Sub 'arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/${EnvironmentName}-cluster/${EnvironmentName}-service'
+
+# =========================================================================
+# Outputs & Cross-Stack Exports
+# =========================================================================
+Outputs:
+  ECRRepoUri:
+    Description: URI of the backend ECR repository
+    Value: !GetAtt ECRRepository.RepositoryUri
+    Export:
+      Name: dsp-cicd-ECRRepoUri
+
+  GitHubDeployRoleArn:
+    Description: ARN of the GitHub Actions OIDC deploy role
+    Value: !GetAtt GitHubDeployRole.Arn
+    Export:
+      Name: dsp-cicd-GitHubDeployRoleArn
