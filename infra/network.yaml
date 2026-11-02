@@ -61,6 +61,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${EnvironmentName}-vpc"
+        - Key: Project
+          Value: !Ref EnvironmentName
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
@@ -68,6 +70,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${EnvironmentName}-igw"
+        - Key: Project
+          Value: !Ref EnvironmentName
 
   VPCGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -88,6 +92,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${EnvironmentName}-public-subnet-1"
+        - Key: Project
+          Value: !Ref EnvironmentName
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet
@@ -99,6 +105,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${EnvironmentName}-public-subnet-2"
+        - Key: Project
+          Value: !Ref EnvironmentName
 
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
@@ -110,6 +118,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${EnvironmentName}-private-subnet-1"
+        - Key: Project
+          Value: !Ref EnvironmentName
 
   PrivateSubnet2:
     Type: AWS::EC2::Subnet
@@ -121,6 +131,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${EnvironmentName}-private-subnet-2"
+        - Key: Project
+          Value: !Ref EnvironmentName
 
   # =========================================================================
   # Route Tables & Associations
@@ -132,6 +144,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${EnvironmentName}-public-rt"
+        - Key: Project
+          Value: !Ref EnvironmentName
 
   PublicRoute:
     Type: AWS::EC2::Route
@@ -160,6 +174,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${EnvironmentName}-private-rt"
+        - Key: Project
+          Value: !Ref EnvironmentName
 
   PrivateSubnet1RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
@@ -198,6 +214,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${EnvironmentName}-alb-sg"
+        - Key: Project
+          Value: !Ref EnvironmentName
 
   ECSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -213,6 +231,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${EnvironmentName}-ecs-sg"
+        - Key: Project
+          Value: !Ref EnvironmentName
 
   RDSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -228,6 +248,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub "${EnvironmentName}-rds-sg"
+        - Key: Project
+          Value: !Ref EnvironmentName
 
 # =========================================================================
 # Outputs with Exports for downstream stacks (data.yaml, application.yaml)
