@@ -6,13 +6,93 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   validate-infra:
+    name: Validate Infrastructure (cfn-lint)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install cfn-lint
-      - run: cfn-lint infra/*.yaml
+
+      - name: Install cfn-lint
+        run: pip install cfn-lint
+
+      - name: Lint CloudFormation Templates
+        run: cfn-lint infra/*.yaml
+
+  test:
+    name: Backend Unit Tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      - name: Run Pytest Suite
+        run: pytest backend/tests
+
+  build-and-push:
+    name: Build & Push ECR Container Image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [validate-infra, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-south-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Docker Image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: ${{ vars.ECR_REPOSITORY || 'dsp-backend' }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -f backend/Dockerfile -t $REGISTRY/$REPOSITORY:$IMAGE_TAG -t $REGISTRY/$REPOSITORY:latest .
+          docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
+          docker push $REGISTRY/$REPOSITORY:latest
+
+  deploy:
+    name: Deploy to Amazon ECS Fargate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    needs: [build-and-push]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-south-1' }}
+          audience: sts.amazonaws.com
+
+      - name: Trigger Rolling Deployment
+        run: |
+          aws ecs update-service --cluster dsp-cluster --service dsp-service --force-new-deployment --region ${{ vars.AWS_REGION || 'ap-south-1' }}
+          aws ecs wait services-stable --cluster dsp-cluster --service dsp-service --region ${{ vars.AWS_REGION || 'ap-south-1' }}
