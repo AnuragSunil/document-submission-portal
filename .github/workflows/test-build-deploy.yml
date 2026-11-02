@@ -15,4 +15,4 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install cfn-lint
-      - run: cfn-lint infra/network.yaml
+      - run: cfn-lint infra/*.yaml
