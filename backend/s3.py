@@ -3,6 +3,7 @@ import logging
 import re
 from typing import Optional
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from .config import AWS_REGION, BUCKET_NAME
@@ -11,8 +12,17 @@ logger = logging.getLogger(__name__)
 
 
 def get_s3_client():
-    """Create and return a boto3 S3 client."""
-    return boto3.client("s3", region_name=AWS_REGION)
+    """
+    Create and return a boto3 S3 client pinned to the regional endpoint with SigV4.
+    Without this, presigned URLs can target the global host and S3 redirects the
+    browser to the regional host, which invalidates the signature.
+    """
+    return boto3.client(
+        "s3",
+        region_name=AWS_REGION,
+        endpoint_url=f"https://s3.{AWS_REGION}.amazonaws.com",
+        config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+    )
 
 
 def upload_to_s3(file_data: bytes, s3_key: str, content_type: str, bucket_name: Optional[str] = None) -> None:
