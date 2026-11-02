@@ -122,6 +122,11 @@ Resources:
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource: !ImportValue dsp-data-DBSecretArn
+              - Sid: EnqueueProcessingMessages
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !ImportValue dsp-data-ProcessingQueueArn
 
   # =========================================================================
   # ECS Task Definition
@@ -157,6 +162,8 @@ Resources:
               Value: dspdb
             - Name: AWS_REGION
               Value: !Ref AWS::Region
+            - Name: QUEUE_URL
+              Value: !ImportValue dsp-data-ProcessingQueueUrl
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -194,6 +201,49 @@ Resources:
         - TargetGroupArn: !Ref TargetGroup
           ContainerName: !Sub '${EnvironmentName}-backend'
           ContainerPort: 8000
+
+  # =========================================================================
+  # CloudWatch Alarms (notify the shared SNS topic from the data stack)
+  # =========================================================================
+  ALB5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-alb-target-5xx'
+      AlarmDescription: Backend returned 5xx responses (3 or more in 5 minutes).
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue dsp-data-AlarmTopicArn
+
+  UnhealthyHostsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-alb-unhealthy-hosts'
+      AlarmDescription: At least one backend task is failing ALB health checks.
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+        - Name: TargetGroup
+          Value: !GetAtt TargetGroup.TargetGroupFullName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue dsp-data-AlarmTopicArn
 
 # =========================================================================
 # Outputs & Cross-Stack Exports

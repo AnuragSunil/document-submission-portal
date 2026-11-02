@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
 BUCKET_NAME = os.getenv("BUCKET_NAME", "")
 DB_SECRET_ARN = os.getenv("DB_SECRET_ARN", "")
+QUEUE_URL = os.getenv("QUEUE_URL", "")
 DB_NAME = os.getenv("DB_NAME", "dspdb")
 
 _cached_db_credentials: Optional[Dict[str, Any]] = None

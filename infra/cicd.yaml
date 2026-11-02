@@ -1,4 +1,4 @@
-AWSTemplateFormatVersion: '2010-09-09'
+﻿AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   CI/CD Stack for Document Submission Portal.
   Provisions ECR repository for backend container images, GitHub Actions OIDC provider,
@@ -26,6 +26,51 @@ Parameters:
     Description: Numeric GitHub repository ID; GitHub embeds it in the OIDC sub claim.
 
 Resources:
+  # =========================================================================
+  # Build Artifacts Bucket (Lambda deployment packages)
+  # =========================================================================
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub '${EnvironmentName}-artifacts-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 7
+
+  ArtifactsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonSSLTLSRequests
+            Effect: Deny
+            # Principal: '*' is safe because this is an explicit Deny policy restricting insecure transport
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt ArtifactsBucket.Arn
+              - !Sub '${ArtifactsBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
   # =========================================================================
   # ECR Container Repository
   # =========================================================================
@@ -118,6 +163,18 @@ Resources:
                   - ecr:CompleteLayerUpload
                   - ecr:PutImage
                 Resource: !GetAtt ECRRepository.Arn
+              - Sid: UploadLambdaPackage
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub '${ArtifactsBucket.Arn}/processor/*'
+              - Sid: UpdateProcessorLambda
+                Effect: Allow
+                Action:
+                  - lambda:UpdateFunctionCode
+                  - lambda:GetFunctionConfiguration
+                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${EnvironmentName}-processor'
               - Sid: ECSDeployService
                 Effect: Allow
                 Action:
@@ -134,6 +191,12 @@ Outputs:
     Value: !GetAtt ECRRepository.RepositoryUri
     Export:
       Name: dsp-cicd-ECRRepoUri
+
+  ArtifactsBucketName:
+    Description: S3 bucket holding Lambda deployment packages
+    Value: !Ref ArtifactsBucket
+    Export:
+      Name: dsp-cicd-ArtifactsBucketName
 
   GitHubDeployRoleArn:
     Description: ARN of the GitHub Actions OIDC deploy role
