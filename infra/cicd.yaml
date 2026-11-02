@@ -15,6 +15,16 @@ Parameters:
     Default: AnuragSunil/document-submission-portal
     Description: Target GitHub organization and repository for OIDC trust (Owner/Repo).
 
+  GitHubOwnerId:
+    Type: String
+    Default: '96289148'
+    Description: Numeric GitHub owner (user/org) ID; GitHub embeds it in the OIDC sub claim.
+
+  GitHubRepoId:
+    Type: String
+    Default: '1442528262'
+    Description: Numeric GitHub repository ID; GitHub embeds it in the OIDC sub claim.
+
 Resources:
   # =========================================================================
   # ECR Container Repository
@@ -55,8 +65,6 @@ Resources:
       Url: https://token.actions.githubusercontent.com
       ClientIdList:
         - sts.amazonaws.com
-        - https://github.com/AnuragSunil
-        - https://github.com/anuragsunil
       ThumbprintList:
         - 06d927fecd0a84aeba28aad1d808139470fe95c3
         - 1b5104a50cdc171e428114400cc1b7fb7fa96291
@@ -79,15 +87,17 @@ Resources:
               Federated: !Ref GitHubOIDCProvider
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
               StringLike:
-                token.actions.githubusercontent.com:aud:
-                  - sts.amazonaws.com
-                  - https://github.com/*
                 token.actions.githubusercontent.com:sub:
+                  # Classic sub format
                   - !Sub 'repo:${GitHubOrgRepo}:*'
-                  - 'repo:*:document-submission-portal:*'
-                  - 'repo:anuragsunil/document-submission-portal:*'
-                  - 'repo:AnuragSunil/document-submission-portal:*'
+                  # ID-based sub format: repo:<owner>@<ownerId>/<repo>@<repoId>:...
+                  - !Sub
+                    - 'repo:${Owner}@${GitHubOwnerId}/${Repo}@${GitHubRepoId}:*'
+                    - Owner: !Select [0, !Split ['/', !Ref GitHubOrgRepo]]
+                      Repo: !Select [1, !Split ['/', !Ref GitHubOrgRepo]]
       Policies:
         - PolicyName: !Sub '${EnvironmentName}-github-deploy-policy'
           PolicyDocument:
