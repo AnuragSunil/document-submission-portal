@@ -48,6 +48,14 @@ def mock_db_operations(monkeypatch):
             _mock_db_store[doc_id]["error_message"] = error_message
             _mock_db_store[doc_id]["updated_at"] = datetime.now(timezone.utc)
 
+    def mock_delete_document(doc_id):
+        _mock_db_store.pop(doc_id, None)
+
+    def mock_update_document_metadata(doc_id, document_type, description):
+        if doc_id in _mock_db_store:
+            _mock_db_store[doc_id]["document_type"] = document_type
+            _mock_db_store[doc_id]["description"] = description
+
     def mock_get_document_stats():
         stats = {"total": len(_mock_db_store), "UPLOADED": 0, "PROCESSING": 0, "PROCESSED": 0, "FAILED": 0}
         for d in _mock_db_store.values():
@@ -60,6 +68,8 @@ def mock_db_operations(monkeypatch):
     monkeypatch.setattr("backend.main.get_document_by_id", mock_get_document_by_id)
     monkeypatch.setattr("backend.main.list_documents", mock_list_documents)
     monkeypatch.setattr("backend.main.update_document_status", mock_update_document_status)
+    monkeypatch.setattr("backend.main.delete_document", mock_delete_document)
+    monkeypatch.setattr("backend.main.update_document_metadata", mock_update_document_metadata)
     monkeypatch.setattr("backend.main.get_document_stats", mock_get_document_stats)
 
 
@@ -331,3 +341,55 @@ def test_retry_document():
     bad_retry = client.post(f"/api/documents/{doc_id}/retry")
     assert bad_retry.status_code == 400
     assert "Only documents in FAILED status" in bad_retry.json()["detail"]
+
+
+def _seed_doc(doc_id, status="PROCESSED"):
+    now = datetime.now(timezone.utc)
+    _mock_db_store[doc_id] = {
+        "document_id": doc_id,
+        "original_filename": "keep.pdf",
+        "s3_key": f"documents/{doc_id}.pdf",
+        "content_type": "application/pdf",
+        "size_bytes": 100,
+        "document_type": "Invoice",
+        "description": "old",
+        "status": status,
+        "error_message": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def test_delete_document_removes_record_and_s3_object(mock_s3_operations):
+    """Verify DELETE removes the DB record and the S3 object."""
+    doc_id = str(uuid.uuid4())
+    _seed_doc(doc_id)
+
+    response = client.delete(f"/api/documents/{doc_id}")
+    assert response.status_code == 204
+    assert doc_id not in _mock_db_store
+    mock_s3_operations["delete"].assert_called_once_with(f"documents/{doc_id}.pdf")
+
+    assert client.delete(f"/api/documents/{doc_id}").status_code == 404
+    assert client.delete("/api/documents/not-a-uuid").status_code == 422
+
+
+def test_update_document_metadata():
+    """Verify PATCH edits type and description, and validates input."""
+    doc_id = str(uuid.uuid4())
+    _seed_doc(doc_id)
+
+    response = client.patch(
+        f"/api/documents/{doc_id}",
+        json={"document_type": " Contract ", "description": "  new text  "},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["document_type"] == "Contract"
+    assert body["description"] == "new text"
+
+    cleared = client.patch(f"/api/documents/{doc_id}", json={"document_type": "Report", "description": ""})
+    assert cleared.json()["description"] is None
+
+    assert client.patch(f"/api/documents/{doc_id}", json={"document_type": ""}).status_code == 422
+    assert client.patch(f"/api/documents/{uuid.uuid4()}", json={"document_type": "X"}).status_code == 404

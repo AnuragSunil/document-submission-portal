@@ -126,6 +126,27 @@ def update_document_status(document_id: str, status: str, error_message: Optiona
             cur.execute(sql, (status, error_message, now, document_id))
 
 
+def delete_document(document_id: str) -> None:
+    """Delete a document metadata record."""
+    sql = "DELETE FROM documents WHERE document_id = %s;"
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (document_id,))
+
+
+def update_document_metadata(document_id: str, document_type: str, description: Optional[str]) -> None:
+    """Update editable metadata (type and description) for a document."""
+    sql = """
+    UPDATE documents
+    SET document_type = %s, description = %s, updated_at = %s
+    WHERE document_id = %s;
+    """
+    now = datetime.now(timezone.utc)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (document_type, description, now, document_id))
+
+
 def get_document_stats() -> Dict[str, int]:
     """Calculate aggregated document counts by status."""
     sql = "SELECT status, COUNT(*) AS count FROM documents GROUP BY status;"

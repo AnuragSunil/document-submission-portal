@@ -8,17 +8,19 @@ from typing import List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .db import (
     check_db_health,
+    delete_document,
     get_document_by_id,
     get_document_stats,
     init_db,
     insert_document,
     list_documents,
+    update_document_metadata,
     update_document_status,
 )
 from .s3 import check_s3_health, delete_from_s3, generate_presigned_download_url, upload_to_s3
@@ -65,6 +67,11 @@ class DocumentResponse(BaseModel):
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+
+class DocumentUpdate(BaseModel):
+    document_type: str = Field(..., min_length=1, max_length=60)
+    description: Optional[str] = Field(None, max_length=500)
 
 
 class StatsResponse(BaseModel):
@@ -237,6 +244,48 @@ def get_document(document_id: str):
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
     return doc
+
+
+@app.patch("/api/documents/{document_id}", response_model=DocumentResponse)
+def update_document(document_id: str, payload: DocumentUpdate):
+    """Edit a document's type and description."""
+    try:
+        uuid.UUID(document_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid document UUID format.")
+
+    if not get_document_by_id(document_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    description = payload.description.strip() if payload.description else None
+    update_document_metadata(document_id, payload.document_type.strip(), description or None)
+    return get_document_by_id(document_id)
+
+
+@app.delete("/api/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_document(document_id: str):
+    """Permanently delete a document's metadata record and its S3 object."""
+    try:
+        uuid.UUID(document_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid document UUID format.")
+
+    doc = get_document_by_id(document_id)
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    try:
+        delete_document(document_id)
+    except Exception as e:
+        logger.error("DB delete failed: %s", type(e).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete document.",
+        )
+
+    delete_from_s3(doc["s3_key"])
+    logger.info("Deleted document: id=%s", document_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/api/documents/{document_id}/download", response_model=PresignedUrlResponse)

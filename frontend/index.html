@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -77,9 +77,23 @@
     .toast { background: #1b2430; color: #fff; padding: 10px 14px; border-radius: 6px; max-width: 360px; font-size: 13px; }
     .toast.err { background: var(--bad); } .toast.ok { background: var(--ok); }
 
+    button.danger { color: var(--bad); border-color: #f0c2bd; }
+    button.danger:hover:not(:disabled) { background: var(--bad-bg); }
+    th.chk, td.chk { width: 36px; padding-right: 0; }
+    .bulk { display: none; align-items: center; gap: 12px; padding: 10px 20px; background: var(--info-bg); border-bottom: 1px solid var(--border); }
+    .bulk.show { display: flex; }
+    dialog { border: 1px solid var(--border); border-radius: 10px; padding: 0; width: min(440px, 92vw); color: var(--text); }
+    dialog::backdrop { background: rgba(20, 28, 40, .45); }
+    dialog form { padding: 20px; }
+    dialog h3 { margin: 0 0 8px; font-size: 16px; }
+    dialog p { margin: 0 0 12px; color: var(--muted); word-break: break-all; }
+    dialog label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin: 10px 0 4px; }
+    .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+    button.danger-solid { background: var(--bad); } button.danger-solid:hover:not(:disabled) { background: #8f1d14; }
+
     @media (max-width: 760px) {
       .stats { grid-template-columns: repeat(2, 1fr); } .grid { grid-template-columns: 1fr; }
-      th:nth-child(2), td:nth-child(2), th:nth-child(5), td:nth-child(5) { display: none; }
+      th:nth-child(3), td:nth-child(3), th:nth-child(6), td:nth-child(6) { display: none; }
     }
   </style>
 </head>
@@ -141,15 +155,45 @@
           <option>FAILED</option>
         </select>
       </div>
+      <div class="bulk" id="bulk"><span id="bulk-count"></span><button class="ghost danger" id="bulk-delete" type="button">Delete selected</button></div>
       <table>
         <thead>
-          <tr><th>File</th><th>Type</th><th>Size</th><th>Status</th><th>Uploaded</th><th></th></tr>
+          <tr><th class="chk"><input type="checkbox" id="check-all" aria-label="Select all"></th><th>File</th><th>Type</th><th>Size</th><th>Status</th><th>Uploaded</th><th></th></tr>
         </thead>
         <tbody id="docs"></tbody>
       </table>
       <div class="empty" id="empty" style="display:none">No documents found.</div>
     </div>
   </main>
+
+  <dialog id="edit-dlg">
+    <form method="dialog" id="edit-form">
+      <h3>Edit document</h3>
+      <p id="edit-name"></p>
+      <label for="edit-type">Document type</label>
+      <select id="edit-type">
+        <option>Identity</option><option>Invoice</option><option>Contract</option><option>Report</option><option>Other</option>
+      </select>
+      <label for="edit-desc">Description</label>
+      <textarea id="edit-desc" maxlength="500"></textarea>
+      <div class="dlg-actions">
+        <button type="button" class="ghost" id="edit-cancel">Cancel</button>
+        <button type="submit" id="edit-save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="del-dlg">
+    <form method="dialog" id="del-form">
+      <h3>Delete documents</h3>
+      <p id="del-text"></p>
+      <p>This permanently removes the file from storage and cannot be undone.</p>
+      <div class="dlg-actions">
+        <button type="button" class="ghost" id="del-cancel">Cancel</button>
+        <button type="submit" class="danger-solid" id="del-confirm">Delete</button>
+      </div>
+    </form>
+  </dialog>
 
   <div id="toasts"></div>
 
@@ -262,6 +306,14 @@
       for (const d of docs) {
         const tr = document.createElement("tr");
 
+        const ck = el("td", "chk");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = selected.has(d.document_id);
+        cb.addEventListener("change", () => { cb.checked ? selected.add(d.document_id) : selected.delete(d.document_id); updateBulk(); });
+        ck.appendChild(cb);
+        tr.appendChild(ck);
+
         const name = el("td", "name", d.original_filename);
         if (d.description) name.appendChild(el("small", "", d.description));
         if (d.status === "FAILED" && d.error_message) name.appendChild(el("small", "", d.error_message));
@@ -290,6 +342,71 @@
         body.appendChild(tr);
       }
     }
+
+    const selected = new Set();
+    let currentDocs = [];
+    let editing = null;
+    let pendingDelete = [];
+
+    function updateBulk() {
+      $("bulk").classList.toggle("show", selected.size > 0);
+      $("bulk-count").textContent = selected.size + " selected";
+      $("check-all").checked = currentDocs.length > 0 && selected.size === currentDocs.length;
+    }
+
+    function openEdit(d) {
+      editing = d;
+      $("edit-name").textContent = d.original_filename;
+      const sel = $("edit-type");
+      if (![...sel.options].some((o) => o.value === d.document_type)) sel.add(new Option(d.document_type));
+      sel.value = d.document_type;
+      $("edit-desc").value = d.description || "";
+      $("edit-dlg").showModal();
+    }
+
+    function confirmDelete(docs) {
+      pendingDelete = docs;
+      $("del-text").textContent = docs.length === 1 ? docs[0].original_filename : docs.length + " documents selected";
+      $("del-dlg").showModal();
+    }
+
+    $("edit-cancel").addEventListener("click", () => $("edit-dlg").close());
+    $("del-cancel").addEventListener("click", () => $("del-dlg").close());
+
+    $("edit-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      $("edit-save").disabled = true;
+      const r = await fetch("/api/documents/" + editing.document_id, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ document_type: $("edit-type").value, description: $("edit-desc").value }),
+      });
+      $("edit-save").disabled = false;
+      $("edit-dlg").close();
+      toast(r.ok ? "Document updated." : "Update failed.", r.ok ? "ok" : "err");
+      refresh();
+    });
+
+    $("del-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      $("del-confirm").disabled = true;
+      const results = await Promise.all(
+        pendingDelete.map((d) => fetch("/api/documents/" + d.document_id, { method: "DELETE" }).then((r) => r.ok).catch(() => false))
+      );
+      $("del-confirm").disabled = false;
+      $("del-dlg").close();
+      const failed = results.filter((ok) => !ok).length;
+      pendingDelete.forEach((d) => selected.delete(d.document_id));
+      toast(failed ? failed + " delete(s) failed." : "Deleted.", failed ? "err" : "ok");
+      refresh();
+    });
+
+    $("bulk-delete").addEventListener("click", () => confirmDelete(currentDocs.filter((d) => selected.has(d.document_id))));
+    $("check-all").addEventListener("change", (e) => {
+      selected.clear();
+      if (e.target.checked) currentDocs.forEach((d) => selected.add(d.document_id));
+      loadDocs();
+    });
 
     function refresh() { loadStats(); loadDocs(); }
 
