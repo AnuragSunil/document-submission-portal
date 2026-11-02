@@ -74,6 +74,6 @@ aws cloudformation describe-stacks \
 # Verify Project tag on Subnets
 aws ec2 describe-subnets \
   --filters "Name=tag:Project,Values=dsp" \
-  --query "Subnets[*].[SubnetId,CidrBlock,Tags]" \
+  --query "Subnets[*].{SubnetId:SubnetId,CIDR:CidrBlock,AZ:AvailabilityZone,Name:Tags[?Key=='Name'].Value | [0],Project:Tags[?Key=='Project'].Value | [0]}" \
   --output table
 ```
