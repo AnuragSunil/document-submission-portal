@@ -55,7 +55,11 @@ Resources:
       Url: https://token.actions.githubusercontent.com
       ClientIdList:
         - sts.amazonaws.com
+        - https://github.com/AnuragSunil
+        - https://github.com/anuragsunil
       ThumbprintList:
+        - 06d927fecd0a84aeba28aad1d808139470fe95c3
+        - 1b5104a50cdc171e428114400cc1b7fb7fa96291
         - 6938fd4d98bab03faadb97b34396831e3780aea1
         - 1c5824a6f8483247dd418b7632b21232a4cf81c1
 
@@ -75,12 +79,15 @@ Resources:
               Federated: !Ref GitHubOIDCProvider
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
-              StringEquals:
-                token.actions.githubusercontent.com:aud: sts.amazonaws.com
               StringLike:
+                token.actions.githubusercontent.com:aud:
+                  - sts.amazonaws.com
+                  - https://github.com/*
                 token.actions.githubusercontent.com:sub:
                   - !Sub 'repo:${GitHubOrgRepo}:*'
-                  - !Sub 'repo:${GitHubOrgRepo}:ref:refs/heads/main'
+                  - 'repo:*:document-submission-portal:*'
+                  - 'repo:anuragsunil/document-submission-portal:*'
+                  - 'repo:AnuragSunil/document-submission-portal:*'
       Policies:
         - PolicyName: !Sub '${EnvironmentName}-github-deploy-policy'
           PolicyDocument:
