@@ -1,0 +1,233 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Processing Stack for Document Submission Portal.
+  Provisions the SQS-triggered processor Lambda (inside the private subnets), the Secrets Manager
+  interface VPC endpoint it needs (no NAT Gateway), least-privilege IAM, security-group rules,
+  and CloudWatch alarms for the dead-letter queue and Lambda errors.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dsp
+    Description: Environment name prefix.
+
+  ArtifactKey:
+    Type: String
+    Default: processor/processor.zip
+    Description: S3 key of the Lambda deployment package inside the artifacts bucket (built by processor/build.py).
+
+Resources:
+  # =========================================================================
+  # Security Groups
+  # LambdaSG egress is restricted to PostgreSQL and the Secrets Manager endpoint only.
+  # =========================================================================
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Processor Lambda - egress to RDS (5432) and Secrets Manager endpoint (443) only
+      VpcId: !ImportValue dsp-network-VPCID
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          DestinationSecurityGroupId: !ImportValue dsp-network-RDSSecurityGroup
+          Description: PostgreSQL to RDS
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-lambda-sg'
+        - Key: Project
+          Value: !Ref EnvironmentName
+
+  SecretsEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Secrets Manager interface endpoint - HTTPS from the Lambda and ECS tasks only
+      VpcId: !ImportValue dsp-network-VPCID
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          Description: HTTPS from processor Lambda
+        # Private DNS makes the endpoint the route for the whole VPC, so ECS tasks must be allowed too.
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !ImportValue dsp-network-ECSSecurityGroup
+          Description: HTTPS from ECS tasks
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-secrets-endpoint-sg'
+        - Key: Project
+          Value: !Ref EnvironmentName
+
+  LambdaToSecretsEndpointEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref LambdaSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationSecurityGroupId: !Ref SecretsEndpointSecurityGroup
+      Description: HTTPS to Secrets Manager endpoint
+
+  RDSIngressFromLambda:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !ImportValue dsp-network-RDSSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref LambdaSecurityGroup
+      Description: Allow PostgreSQL access from the processor Lambda
+
+  # =========================================================================
+  # Secrets Manager Interface Endpoint (single subnet to halve the hourly cost)
+  # =========================================================================
+  SecretsManagerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Interface
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.secretsmanager'
+      VpcId: !ImportValue dsp-network-VPCID
+      SubnetIds:
+        - !ImportValue dsp-network-PrivateSubnet1
+      SecurityGroupIds:
+        - !Ref SecretsEndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  # =========================================================================
+  # Processor Lambda
+  # =========================================================================
+  ProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${EnvironmentName}-processor'
+      RetentionInDays: 7
+
+  ProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvironmentName}-processor-role'
+      Description: Runtime role for the SQS processor Lambda (queue consume, DB secret read, VPC networking)
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: !Sub '${EnvironmentName}-processor-permissions'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ConsumeProcessingQueue
+                Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !ImportValue dsp-data-ProcessingQueueArn
+              - Sid: ReadDatabaseSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !ImportValue dsp-data-DBSecretArn
+
+  ProcessorFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - ProcessorLogGroup
+      - SecretsManagerEndpoint
+      - RDSIngressFromLambda
+      - LambdaToSecretsEndpointEgress
+    Properties:
+      FunctionName: !Sub '${EnvironmentName}-processor'
+      Description: Consumes document-processing messages from SQS and updates status in RDS
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Architectures:
+        - x86_64
+      Role: !GetAtt ProcessorRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Code:
+        S3Bucket: !ImportValue dsp-cicd-ArtifactsBucketName
+        S3Key: !Ref ArtifactKey
+      Environment:
+        Variables:
+          DB_SECRET_ARN: !ImportValue dsp-data-DBSecretArn
+          DB_NAME: dspdb
+          MAX_RECEIVE_COUNT: '3'
+      VpcConfig:
+        SubnetIds: !Split [',', !ImportValue dsp-network-PrivateSubnets]
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+
+  QueueEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !ImportValue dsp-data-ProcessingQueueArn
+      FunctionName: !Ref ProcessorFunction
+      BatchSize: 5
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+      ScalingConfig:
+        MaximumConcurrency: 2
+
+  # =========================================================================
+  # CloudWatch Alarms (notify the shared SNS topic)
+  # =========================================================================
+  DLQMessagesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-processing-dlq-not-empty'
+      AlarmDescription: Documents failed processing 3 times and landed in the dead-letter queue.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !ImportValue dsp-data-ProcessingDLQName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue dsp-data-AlarmTopicArn
+
+  ProcessorErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${EnvironmentName}-processor-lambda-errors'
+      AlarmDescription: Processor Lambda invocation errors.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ProcessorFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !ImportValue dsp-data-AlarmTopicArn
+
+# =========================================================================
+# Outputs
+# =========================================================================
+Outputs:
+  ProcessorFunctionName:
+    Description: Name of the processor Lambda function
+    Value: !Ref ProcessorFunction
+
+  ProcessorLogGroupName:
+    Description: CloudWatch log group of the processor Lambda
+    Value: !Ref ProcessorLogGroup

@@ -1,176 +1,174 @@
-# Document Submission Portal — Complete Project Reference & Status
+﻿# Document Submission Portal — Complete Project Reference & Status
 
-This document contains the complete technical blueprint, current progress across all stages, architecture details, commands, and operations guide for the **Document Submission Portal** AWS capstone project.
+Technical reference, current status, architecture decisions and operations guide for the **Document Submission Portal** AWS capstone project.
 
 ---
 
-## 1. Project Overview & Target Flow
+## 1. Project Overview & Flow
 
 Users upload documents (PDF, DOCX, PNG, JPG, max 10 MB).
-- File goes to a private Amazon S3 bucket with default SSE-S3 (`AES256`) encryption and HTTPS-only transport enforcement.
-- Document metadata and status are stored in an Amazon RDS PostgreSQL database (`db.t4g.micro`, Single-AZ).
-- Status workflow: `UPLOADED` ➔ `PROCESSING` ➔ `PROCESSED` (or `FAILED` with retry option).
-- Backend REST API is built with Python 3.12 (FastAPI + Uvicorn) running on AWS ECS Fargate behind an Application Load Balancer (ALB).
-- CI/CD builds container images and manages zero-downtime rolling deployments via GitHub Actions using AWS IAM OIDC (no long-lived credentials).
+- The file goes to a private Amazon S3 bucket (SSE-S3 `AES256`, HTTPS-only policy, Block Public Access).
+- Metadata and status are stored in Amazon RDS PostgreSQL (`db.t4g.micro`, Single-AZ, encrypted).
+- After upload the API sends a message to Amazon SQS and returns immediately. A Lambda consumes it and moves the document
+  `UPLOADED` ➔ `PROCESSING` ➔ `PROCESSED` (or `FAILED`, with a retry action).
+- The REST API is Python 3.12 (FastAPI + Uvicorn) on AWS ECS Fargate behind an Application Load Balancer.
+- CI/CD builds and deploys through GitHub Actions using AWS IAM OIDC (no long-lived credentials).
 
 ```
-[ User / Client ]
-       │
-       ▼ (HTTP Port 80 / ALB DNS Name)
-[ Application Load Balancer ] (Public Subnets, alb-sg)
-       │
-       ▼ (Port 8000)
-[ ECS Fargate Tasks ] (Public Subnets with AssignPublicIp: ENABLED, ecs-sg)
-   ├──▶ S3 Bucket (Private document storage, HTTPS-only)
-   ├──▶ RDS PostgreSQL (Private Subnets, rds-sg, Port 5432)
-   ├──▶ Secrets Manager (Database master credentials)
-   └──▶ CloudWatch Logs (/ecs/dsp-backend, 7-day retention)
+User -> ALB (public subnets)
+        -> ECS Fargate (public subnets, inbound only from alb-sg)
+             |-> S3 documents bucket (private)
+             |-> RDS PostgreSQL (private subnets)
+             |-> SQS processing queue --(3 failures)--> Dead-letter queue --> CloudWatch alarm --> SNS
+                    -> Lambda processor (private subnets) -> RDS
+             |-> Secrets Manager (DB credentials)
+             `-> CloudWatch Logs (/ecs/dsp-backend, /aws/lambda/dsp-processor; 7-day retention)
+GitHub -> GitHub Actions (OIDC) -> ECR -> ECS rolling deployment;  Actions -> Lambda package -> S3 -> Lambda
 ```
+
+Live URL: the `ALBDNSName` output of the `dsp-application` stack (HTTP).
 
 ---
 
-## 2. Infrastructure Architecture & Stacks Breakdown
+## 2. Stacks (all `CREATE_COMPLETE` / `UPDATE_COMPLETE` once deployed)
 
-All infrastructure is provisioned through modular CloudFormation templates in [`infra/`](infra/):
+| Stack | Template | Resources | Exports |
+| :--- | :--- | :--- | :--- |
+| `dsp-network` | [`infra/network.yaml`](infra/network.yaml) | VPC `10.0.0.0/16`, 2 public + 2 private subnets, IGW, route tables, `alb-sg`, `ecs-sg`, `rds-sg` | `dsp-network-*` |
+| `dsp-cicd` | [`infra/cicd.yaml`](infra/cicd.yaml) | ECR `dsp-backend` (scan on push, keep 10), versioned artifacts bucket, GitHub OIDC provider, `dsp-github-deploy-role` | `dsp-cicd-ECRRepoUri`, `-ArtifactsBucketName`, `-GitHubDeployRoleArn` |
+| `dsp-data` | [`infra/data.yaml`](infra/data.yaml) | Documents bucket, RDS PostgreSQL, Secrets Manager secret, SQS queue + DLQ, SNS alarm topic, app log group | `dsp-data-*` |
+| `dsp-processing` | [`infra/processing.yaml`](infra/processing.yaml) | Processor Lambda, `lambda-sg`, Secrets Manager interface endpoint, event source mapping, DLQ + Lambda-error alarms | — |
+| `dsp-application` | [`infra/application.yaml`](infra/application.yaml) | ECS cluster/service/task definition, ALB, target group, execution + task roles, 5xx and unhealthy-host alarms | `dsp-application-ALBDNSName` |
 
-```
-infra/
-├── network.yaml      # VPC, subnets, route tables, tiered security groups
-├── data.yaml         # S3 bucket, RDS PostgreSQL, Secrets Manager, CloudWatch Logs
-├── cicd.yaml         # ECR repository, GitHub OIDC provider, Deploy IAM role
-└── application.yaml  # ECS Cluster, ALB, Task Definition, Fargate Service
-```
-
-### Stacks Summary
-
-| Stack Name | CloudFormation Template | Resources Provisioned | Key Exports | Status |
-| :--- | :--- | :--- | :--- | :--- |
-| **`dsp-network`** | [`infra/network.yaml`](infra/network.yaml:1) | - 1 VPC (`10.0.0.0/16`) across 2 AZs<br>- 2 Public Subnets (`10.0.1.0/24`, `10.0.2.0/24`)<br>- 2 Private Subnets (`10.0.11.0/24`, `10.0.12.0/24`)<br>- 1 Internet Gateway & Route Tables<br>- 3 Tiered Security Groups (`alb-sg`, `ecs-sg`, `rds-sg`) | `dsp-network-VPCID`<br>`dsp-network-PublicSubnets`<br>`dsp-network-PrivateSubnets`<br>`dsp-network-ALBSecurityGroup`<br>`dsp-network-ECSSecurityGroup`<br>`dsp-network-RDSSecurityGroup` | **DEPLOYED (`CREATE_COMPLETE`)** |
-| **`dsp-data`** | [`infra/data.yaml`](infra/data.yaml:1) | - S3 Documents Bucket (SSE-S3, HTTPS-only policy)<br>- CloudWatch Log Group (`/ecs/dsp-backend`, 7d retention)<br>- Secrets Manager DB Secret (`GenerateSecretString`)<br>- DB Subnet Group on private subnets<br>- RDS PostgreSQL (`db.t4g.micro`, 20GB gp3, encrypted)<br>- SecretTargetAttachment linking DB to Secret | `dsp-data-DocumentsBucketName`<br>`dsp-data-DocumentsBucketArn`<br>`dsp-data-DBSecretArn`<br>`dsp-data-DBEndpoint`<br>`dsp-data-AppLogGroupName` | **Template Ready / Change Set Created** |
-| **`dsp-cicd`** | [`infra/cicd.yaml`](infra/cicd.yaml:1) | - ECR Repository (`dsp-backend`, ScanOnPush, Keep 10 images)<br>- IAM OIDC Provider (`token.actions.githubusercontent.com`)<br>- IAM Deploy Role (`dsp-github-deploy-role`) | `dsp-cicd-ECRRepoUri`<br>`dsp-cicd-GitHubDeployRoleArn` | **DEPLOYED (`CREATE_COMPLETE`)** |
-| **`dsp-application`** | [`infra/application.yaml`](infra/application.yaml:1) | - ECS Cluster (`dsp-cluster`)<br>- ALB (internet-facing, public subnets)<br>- Target Group (port 8000, `/health` probe)<br>- HTTP 80 Listener<br>- Task Execution Role (`AmazonECSTaskExecutionRolePolicy`)<br>- Task Role (scoped S3 + Secrets Manager access)<br>- Task Definition (Fargate, 256 CPU / 512 RAM)<br>- ECS Fargate Service (Rolling updates, rollback circuit breaker) | `dsp-application-ALBDNSName` | **Template Ready for Deploy** |
+Deploy order: network, cicd, data, processing, application. Delete in reverse.
 
 ---
 
-## 3. Cost Optimization Decisions
+## 3. Key Decisions
 
-1. **Zero NAT Gateway / Zero VPC Endpoints Architecture**:
-   - Running ECS tasks in public subnets with `AssignPublicIp: ENABLED` allows outbound internet access to ECR, S3, Secrets Manager, and CloudWatch without costly NAT Gateways or Interface VPC Endpoints.
-   - **Cost Savings**: Saves ~$32/month per NAT Gateway and ~$29.20/month for 4 VPC Endpoints.
-   - **Security**: The `ecs-sg` security group **strictly rejects all inbound traffic from the internet**, permitting ingress on port 8000 only from `alb-sg`.
-2. **Cheapest Safe RDS**:
-   - `db.t4g.micro` (AWS Graviton2) at ~$11.68/month in `ap-south-1`.
-   - Single-AZ, 20 GiB `gp3` storage, automated 1-day backups.
-3. **No KMS Customer Keys / No Route 53**:
-   - Standard SSE-S3 (`AES256`) and default RDS encryption.
-   - Access via ALB Public DNS name over HTTP.
+### ECS in public subnets (cost vs. the reference design)
+The reference architecture places Fargate in private subnets, which requires a NAT Gateway (~$32/month) or four interface
+endpoints (~$29/month) so tasks can pull from ECR and reach S3, Logs and Secrets Manager. Tasks instead run in public
+subnets with a public IP. This is **not an open door**: `ecs-sg` has a single inbound rule, TCP 8000 from `alb-sg`, so
+nothing on the internet reaches a task directly. RDS stays private. To harden later, add NAT or endpoints and switch
+`AssignPublicIp` to `DISABLED` and the service subnets to the private pair.
+
+### Lambda in private subnets without NAT
+The processor must reach RDS (private) and Secrets Manager. It uses one Secrets Manager interface endpoint (~$7/month,
+single subnet) and a security group that only allows egress to RDS 5432 and that endpoint on 443.
+
+### No Route 53 / HTTPS
+The ALB DNS name over HTTP is the entry point. Adding a domain, an ACM certificate and an HTTPS listener is the next step
+for production use.
+
+### Cost summary (ap-south-1, approximate, running 24/7)
+| Item | $/month |
+| :--- | :--- |
+| RDS `db.t4g.micro` + 20 GiB gp3 | ~12 |
+| ALB | ~17 |
+| Fargate 0.25 vCPU / 0.5 GB x 1 | ~9 |
+| Secrets Manager endpoint (1 AZ) | ~7 |
+| Secrets, SQS, Lambda, logs, S3 | ~1-2 |
+| **Total** | **~46** |
 
 ---
 
-## 4. Backend Application (`backend/`)
+## 4. Security Posture
 
-- **Language & Framework**: Python 3.12, FastAPI, Uvicorn, psycopg3, boto3, Pydantic v2.
-- **Containerization**: [`backend/Dockerfile`](backend/Dockerfile:1) based on `python:3.12-slim` running under non-root `appuser` (UID 1001).
-- **Automated Tests**: [`backend/tests/test_api.py`](backend/tests/test_api.py:1) with 13 unit tests covering health, readiness, MIME allowlists, 10MB chunked size limits, S3 deletion rollback on DB error, parameterized search, and retry flow.
+- S3: Block Public Access on, SSE-S3, deny non-TLS. Downloads only through 60-second presigned URLs (regional SigV4).
+- SQS: SSE enabled, deny non-TLS, DLQ with 14-day retention.
+- RDS: private, encrypted, reachable only from `ecs-sg` and `lambda-sg`. Credentials generated in Secrets Manager; never in code or images.
+- IAM: four separate roles (deploy, task execution, task, Lambda), each scoped to specific resources.
+- OIDC: trust requires audience `sts.amazonaws.com` and a subject for this repository. GitHub currently sends
+  `repo:<owner>@<ownerId>/<repo>@<repoId>:...`; the trust policy accepts that and the classic `repo:<owner>/<repo>:...` form.
+- Input handling: extension + MIME allowlists, streamed 10 MB limit, UUID validation, parameterized SQL, safe error summaries; logs never contain file contents or credentials.
+- Containers: non-root user (UID 1001).
 
-### REST API Endpoints
+**Known gaps**: no end-user authentication (anyone with the URL can upload and delete) and HTTP only.
+
+---
+
+## 5. Backend (`backend/`) and Processor (`processor/`)
+
+- **API**: Python 3.12, FastAPI, Uvicorn, psycopg 3, boto3, Pydantic v2. Upload order: validate, S3 put, RDS insert (S3 object removed if the insert fails), enqueue to SQS. If `QUEUE_URL` is unset or SQS fails, processing falls back to in-process so uploads never break.
+- **Processor**: [`processor/handler.py`](processor/handler.py) reads `{"document_id": ...}`, is idempotent, reports partial batch failures, and on the 3rd failed receive marks the document `FAILED` with a safe message. [`processor/build.py`](processor/build.py) builds a Linux x86_64 Python 3.12 package regardless of the build machine.
+- **Tests**: `pytest backend/tests processor/tests` (23 tests total across API, validation, rollback, queue dispatch, fallback, edit/delete and the processor).
+
+### REST endpoints
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
-| `GET` | `/health` | Shallow HTTP 200 health check for ALB target groups (no dependencies). |
-| `GET` | `/ready` | Deep readiness probe verifying RDS database and S3 reachability. |
-| `POST` | `/api/documents` | Multipart document upload (`file`, `document_type`, `description`). Enforces MIME/extension validation and 10MB streaming limit. Uploads to S3, inserts RDS metadata, and triggers background processing. |
-| `GET` | `/api/documents` | List documents ordered newest first. Query parameters: `search` (case-insensitive) and `status` (`UPLOADED`, `PROCESSING`, `PROCESSED`, `FAILED`). |
-| `GET` | `/api/documents/{id}` | Retrieve single document metadata by UUID. |
-| `GET` | `/api/documents/{id}/download` | Generates a 60-second presigned S3 download URL as JSON `{"url": "..."}` with sanitized `Content-Disposition`. |
-| `GET` | `/api/stats` | Aggregated document counts by status (`total`, `UPLOADED`, `PROCESSING`, `PROCESSED`, `FAILED`). |
-| `POST` | `/api/documents/{id}/retry` | Resets a `FAILED` document back to `UPLOADED` and re-triggers background processing. |
-| `GET` | `/*` | Static frontend files mounted from `frontend/` directory (fallback). |
+| `GET` | `/health` | Shallow 200 for ALB health checks |
+| `GET` | `/ready` | Verifies RDS and S3 |
+| `POST` | `/api/documents` | Multipart upload with validation, S3 + RDS + SQS |
+| `GET` | `/api/documents` | List newest first; `search`, `status` filters |
+| `GET` | `/api/documents/{id}` | One document's metadata |
+| `PATCH` | `/api/documents/{id}` | Edit document type and description |
+| `DELETE` | `/api/documents/{id}` | Delete record and S3 object |
+| `GET` | `/api/documents/{id}/download` | 60-second presigned URL |
+| `POST` | `/api/documents/{id}/retry` | Re-queue a `FAILED` document |
+| `GET` | `/api/stats` | Counts by status |
+| `GET` | `/` | Static single-page frontend |
 
 ---
 
-## 5. CI/CD Pipeline (`.github/workflows/test-build-deploy.yml`)
+## 6. CI/CD (`.github/workflows/test-build-deploy.yml`)
 
-- **Authentication**: Keyless AWS IAM OIDC via `aws-actions/configure-aws-credentials@v4`.
-- **Jobs**:
-  1. `validate-infra`: Runs `cfn-lint infra/*.yaml` on every PR and push.
-  2. `test`: Installs dependencies and runs `pytest backend/tests` on every PR and push.
-  3. `build-and-push`: Runs on push to `main`. Assumes `dsp-github-deploy-role`, logs into ECR, builds Docker image, and pushes tags `${{ github.sha }}` and `latest`.
-  4. `deploy`: Runs on push to `main` when repository variable `DEPLOY_ENABLED == 'true'`, executing `aws ecs update-service --force-new-deployment`.
+| Job | Trigger | Does |
+| :--- | :--- | :--- |
+| `validate-infra` | PR + push | `cfn-lint infra/*.yaml` |
+| `test` | PR + push | `pytest backend/tests processor/tests` |
+| `build-and-push` | push to `main` | OIDC role, ECR login, build, push tags `${{ github.sha }}` and `latest` |
+| `package-processor` | push to `main` and `PROCESSOR_ENABLED=true` | Build Lambda zip, upload to artifacts bucket, `update-function-code` |
+| `deploy` | push to `main` and `DEPLOY_ENABLED=true` | `ecs update-service --force-new-deployment`, wait for stable |
 
-### Required GitHub Repository Variables
-Configure in **GitHub Repo ➔ Settings ➔ Secrets and variables ➔ Actions ➔ Variables**:
-- `AWS_REGION`: `ap-south-1`
-- `ECR_REPOSITORY`: `dsp-backend`
-- `ROLE_TO_ASSUME`: `arn:aws:iam::773569338012:role/dsp-github-deploy-role`
-- `DEPLOY_ENABLED`: `false` (set to `true` after application stack is deployed)
+### Repository variables
+`AWS_REGION=ap-south-1`, `ECR_REPOSITORY=dsp-backend`, `ROLE_TO_ASSUME=arn:aws:iam::773569338012:role/dsp-github-deploy-role`,
+`DEPLOY_ENABLED=true`, `PROCESSOR_ENABLED=true` (set after `dsp-processing` is deployed).
+
+### OIDC incident (resolved)
+`Not authorized to perform sts:AssumeRoleWithWebIdentity` was caused by the trust policy only matching
+`repo:AnuragSunil/document-submission-portal:*` while GitHub sent `repo:AnuragSunil@96289148/document-submission-portal@1442528262:ref:refs/heads/main`.
+CloudTrail (`AssumeRoleWithWebIdentity` events) showed the real subject. The trust policy now accepts both forms with an exact audience.
 
 ---
 
-## 6. Complete Deployment Runbook (Copy-Paste Commands)
+## 7. Monitoring
 
-### 1. Update/Deploy CI/CD Stack (ECR & OIDC)
-```powershell
-aws cloudformation deploy `
-  --template-file infra/cicd.yaml `
-  --stack-name dsp-cicd `
-  --parameter-overrides EnvironmentName=dsp GitHubOrgRepo=AnuragSunil/document-submission-portal `
-  --tags Project=dsp `
-  --capabilities CAPABILITY_NAMED_IAM
-```
+| Alarm | Meaning |
+| :--- | :--- |
+| `dsp-alb-target-5xx` | 3+ backend 5xx responses in 5 minutes |
+| `dsp-alb-unhealthy-hosts` | A task failed ALB health checks for 3 minutes |
+| `dsp-processing-dlq-not-empty` | A document failed processing 3 times |
+| `dsp-processor-lambda-errors` | Processor invocation errors |
 
-### 2. Verify First ECR Container Image Pushed
-```powershell
-aws ecr describe-images --repository-name dsp-backend --region ap-south-1 --query "imageDetails[*].[imageTags,imagePushedAt]" --output table
-```
+All alarms notify SNS topic `dsp-alarms`. Pass `AlarmEmail=<address>` to the data stack to subscribe an email and confirm the message AWS sends.
 
-### 3. Execute `dsp-data` Change Set (Starts RDS Billing)
-```powershell
-aws cloudformation execute-change-set `
-  --stack-name dsp-data `
-  --change-set-name $(aws cloudformation list-change-sets --stack-name dsp-data --query "Summaries[0].ChangeSetName" --output text)
-```
+---
 
-### 4. Deploy `dsp-application` Stack
-```powershell
-aws cloudformation deploy `
-  --template-file infra/application.yaml `
-  --stack-name dsp-application `
-  --parameter-overrides EnvironmentName=dsp ImageTag=latest DesiredCount=1 `
-  --tags Project=dsp `
-  --capabilities CAPABILITY_NAMED_IAM
-```
+## 8. Operations
 
-### 5. Verify ALB & Health Checks
+Deploy, verify, safe updates and troubleshooting: [`docs/runbook.md`](docs/runbook.md). Teardown (ordered, including the
+versioned artifacts bucket): [`docs/teardown.md`](docs/teardown.md). Architecture detail: [`docs/architecture.md`](docs/architecture.md).
+
+Quick verification:
+
 ```powershell
-$ALB_DNS = aws cloudformation describe-stacks --stack-name dsp-application --query "Stacks[0].Outputs[?OutputKey=='ALBDNSName'].OutputValue" --output text
-Write-Host "Application URL: http://$ALB_DNS"
-curl "http://$ALB_DNS/health"
-curl "http://$ALB_DNS/ready"
+$ALB = aws cloudformation describe-stacks --stack-name dsp-application --region ap-south-1 --query "Stacks[0].Outputs[?OutputKey=='ALBDNSName'].OutputValue" --output text
+curl.exe "http://$ALB/health"; curl.exe "http://$ALB/ready"
+aws logs tail /aws/lambda/dsp-processor --region ap-south-1 --since 5m
 ```
 
 ---
 
-## 7. Teardown Procedure
+## 9. Capstone Requirements Coverage
 
-To cleanly delete all resources without leaving orphan charges:
-
-```powershell
-# 1. Delete Application Stack
-aws cloudformation delete-stack --stack-name dsp-application
-aws cloudformation wait stack-delete-complete --stack-name dsp-application
-
-# 2. Empty and Delete Data Stack (S3 + RDS)
-$BUCKET = aws cloudformation describe-stacks --stack-name dsp-data --query "Stacks[0].Outputs[?OutputKey=='DocumentsBucketName'].OutputValue" --output text
-aws s3 rm "s3://$BUCKET" --recursive
-aws cloudformation delete-stack --stack-name dsp-data
-aws cloudformation wait stack-delete-complete --stack-name dsp-data
-
-# 3. Delete CI/CD Stack
-aws cloudformation delete-stack --stack-name dsp-cicd
-aws cloudformation wait stack-delete-complete --stack-name dsp-cicd
-
-# 4. Delete Base Network Stack
-aws cloudformation delete-stack --stack-name dsp-network
-aws cloudformation wait stack-delete-complete --stack-name dsp-network
-```
+| Area | Status |
+| :--- | :--- |
+| FR-01..FR-09 (dashboard, upload, S3, metadata, list/search/filter, details/download, status, health, timestamps) | Done |
+| GitHub, GitHub Actions (OIDC), CloudFormation, ECR, ECS Fargate, ALB, VPC, RDS, S3, Secrets Manager, CloudWatch, IAM | Done |
+| SQS + dead-letter queue, Lambda processor (extension) | Done |
+| CloudWatch alarms | Done |
+| Route 53 / HTTPS | Not done (cost; ALB DNS over HTTP) |
+| Fargate in private subnets | Deviation: public subnets locked to the ALB, for cost (section 3) |
+| AWS KMS customer-managed keys | Not done (optional; service-managed encryption used) |

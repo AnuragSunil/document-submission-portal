@@ -1,4 +1,4 @@
-name: Test, Build & Deploy
+﻿name: Test, Build & Deploy
 
 on:
   push:
@@ -47,7 +47,7 @@ jobs:
           pip install -r backend/requirements.txt -r backend/requirements-dev.txt
 
       - name: Run Pytest Suite
-        run: pytest backend/tests
+        run: pytest backend/tests processor/tests
 
   build-and-push:
     name: Build & Push ECR Container Image
@@ -79,6 +79,42 @@ jobs:
           docker build -f backend/Dockerfile -t $REGISTRY/$REPOSITORY:$IMAGE_TAG -t $REGISTRY/$REPOSITORY:latest .
           docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
           docker push $REGISTRY/$REPOSITORY:latest
+
+  package-processor:
+    name: Package & Deploy Processor Lambda
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.PROCESSOR_ENABLED == 'true'
+    needs: [validate-infra, test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Lambda Package
+        run: python processor/build.py
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.ROLE_TO_ASSUME || secrets.ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'ap-south-1' }}
+          audience: sts.amazonaws.com
+          role-session-name: GitHubActions-DSP
+
+      - name: Upload Package and Update Function
+        env:
+          AWS_REGION_NAME: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'ap-south-1' }}
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ARTIFACTS_BUCKET="dsp-artifacts-${ACCOUNT_ID}-${AWS_REGION_NAME}"
+          aws s3 cp processor/dist/processor.zip "s3://$ARTIFACTS_BUCKET/processor/processor.zip" --region "$AWS_REGION_NAME"
+          aws lambda update-function-code --function-name dsp-processor \
+            --s3-bucket "$ARTIFACTS_BUCKET" --s3-key processor/processor.zip --region "$AWS_REGION_NAME" > /dev/null
+          aws lambda wait function-updated --function-name dsp-processor --region "$AWS_REGION_NAME"
 
   deploy:
     name: Deploy to Amazon ECS Fargate

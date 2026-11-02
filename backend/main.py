@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import logging
 import os
 import uuid
@@ -23,6 +23,7 @@ from .db import (
     update_document_metadata,
     update_document_status,
 )
+from .sqs import enqueue_document
 from .s3 import check_s3_health, delete_from_s3, generate_presigned_download_url, upload_to_s3
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -97,6 +98,13 @@ async def process_document_background(document_id: str) -> None:
     except Exception as e:
         logger.error("Processing document failed: id=%s error=%s", document_id, type(e).__name__)
         update_document_status(document_id, "FAILED", error_message="Document processing failed during extraction.")
+
+
+def dispatch_processing(document_id: str, background_tasks: BackgroundTasks) -> None:
+    """Queue the document for the SQS/Lambda processor; fall back to in-process simulation."""
+    if enqueue_document(document_id):
+        return
+    background_tasks.add_task(process_document_background, document_id)
 
 
 # =========================================================================
@@ -217,8 +225,8 @@ async def upload_document(
             detail="Failed to record document metadata.",
         )
 
-    # 3. Launch background processing simulation
-    background_tasks.add_task(process_document_background, document_id)
+    # 3. Hand off to the processing queue (or in-process fallback)
+    dispatch_processing(document_id, background_tasks)
 
     return doc_record
 
@@ -337,7 +345,7 @@ def retry_document(document_id: str, background_tasks: BackgroundTasks):
         )
 
     update_document_status(document_id, "UPLOADED", error_message=None)
-    background_tasks.add_task(process_document_background, document_id)
+    dispatch_processing(document_id, background_tasks)
 
     updated_doc = get_document_by_id(document_id)
     return updated_doc

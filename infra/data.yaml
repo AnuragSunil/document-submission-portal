@@ -2,13 +2,22 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   Data Stack for Document Submission Portal.
   Provisions S3 documents bucket with HTTPS-only policy, CloudWatch log group,
-  Secrets Manager database credentials, DB subnet group, and RDS PostgreSQL instance.
+  Secrets Manager database credentials, DB subnet group, RDS PostgreSQL instance,
+  and the SQS document-processing queue with its dead-letter queue.
 
 Parameters:
   EnvironmentName:
     Type: String
     Default: dsp
     Description: Environment name prefix.
+
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: Optional email address subscribed to CloudWatch alarm notifications (confirm the subscription email).
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
 
 Resources:
   # =========================================================================
@@ -48,6 +57,24 @@ Resources:
                 aws:SecureTransport: 'false'
 
   # =========================================================================
+  # Alarm Notifications (SNS)
+  # Not encrypted with the AWS-managed key: CloudWatch alarms cannot publish to topics
+  # that use aws/sns. Messages contain only alarm names and metric values.
+  # =========================================================================
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${EnvironmentName}-alarms'
+
+  AlarmEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  # =========================================================================
   # CloudWatch Logging
   # =========================================================================
   AppLogGroup:
@@ -56,6 +83,53 @@ Resources:
     Properties:
       LogGroupName: !Sub "/ecs/${EnvironmentName}-backend"
       RetentionInDays: 7
+
+  # =========================================================================
+  # SQS Document Processing Queue (+ Dead-Letter Queue)
+  # Backend enqueues a message after upload; the processor Lambda consumes it.
+  # After 3 failed receives a message moves to the DLQ for inspection.
+  # =========================================================================
+  ProcessingDLQ:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Delete
+    Properties:
+      QueueName: !Sub '${EnvironmentName}-processing-dlq'
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  ProcessingQueue:
+    Type: AWS::SQS::Queue
+    DeletionPolicy: Delete
+    Properties:
+      QueueName: !Sub '${EnvironmentName}-processing'
+      # Must be >= the processor Lambda timeout (30s); 6x is the AWS recommendation
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 345600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ProcessingDLQ.Arn
+        maxReceiveCount: 3
+
+  QueueTransportPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref ProcessingQueue
+        - !Ref ProcessingDLQ
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonSSLTLSRequests
+            Effect: Deny
+            # Principal: '*' is safe because this is an explicit Deny policy restricting insecure transport
+            Principal: '*'
+            Action: 'sqs:*'
+            Resource:
+              - !GetAtt ProcessingQueue.Arn
+              - !GetAtt ProcessingDLQ.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
 
   # =========================================================================
   # Database Credentials (Secrets Manager)
@@ -140,3 +214,27 @@ Outputs:
     Value: !Ref AppLogGroup
     Export:
       Name: dsp-data-AppLogGroupName
+
+  AlarmTopicArn:
+    Description: ARN of the SNS topic receiving CloudWatch alarm notifications
+    Value: !Ref AlarmTopic
+    Export:
+      Name: dsp-data-AlarmTopicArn
+
+  ProcessingQueueUrl:
+    Description: URL of the document-processing SQS queue
+    Value: !Ref ProcessingQueue
+    Export:
+      Name: dsp-data-ProcessingQueueUrl
+
+  ProcessingQueueArn:
+    Description: ARN of the document-processing SQS queue
+    Value: !GetAtt ProcessingQueue.Arn
+    Export:
+      Name: dsp-data-ProcessingQueueArn
+
+  ProcessingDLQName:
+    Description: Name of the processing dead-letter queue
+    Value: !GetAtt ProcessingDLQ.QueueName
+    Export:
+      Name: dsp-data-ProcessingDLQName

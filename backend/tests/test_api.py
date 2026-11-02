@@ -393,3 +393,39 @@ def test_update_document_metadata():
 
     assert client.patch(f"/api/documents/{doc_id}", json={"document_type": ""}).status_code == 422
     assert client.patch(f"/api/documents/{uuid.uuid4()}", json={"document_type": "X"}).status_code == 404
+
+
+def test_upload_enqueues_to_sqs_when_available(monkeypatch):
+    """When SQS accepts the message, in-process simulation must not run."""
+    sent = []
+    monkeypatch.setattr("backend.main.enqueue_document", lambda doc_id: sent.append(doc_id) or True)
+    ran = []
+    monkeypatch.setattr("backend.main.process_document_background", lambda doc_id: ran.append(doc_id))
+
+    response = client.post(
+        "/api/documents",
+        files={"file": ("a.pdf", io.BytesIO(b"%PDF-1.4 test"), "application/pdf")},
+        data={"document_type": "Invoice"},
+    )
+    assert response.status_code == 201
+    assert sent == [response.json()["document_id"]]
+    assert ran == []
+
+
+def test_upload_falls_back_to_in_process_when_queue_unavailable(monkeypatch):
+    """If enqueue fails or no queue is configured, processing still happens in-process."""
+    monkeypatch.setattr("backend.main.enqueue_document", lambda doc_id: False)
+    ran = []
+
+    async def fake_process(doc_id):
+        ran.append(doc_id)
+
+    monkeypatch.setattr("backend.main.process_document_background", fake_process)
+
+    response = client.post(
+        "/api/documents",
+        files={"file": ("a.pdf", io.BytesIO(b"%PDF-1.4 test"), "application/pdf")},
+        data={"document_type": "Invoice"},
+    )
+    assert response.status_code == 201
+    assert ran == [response.json()["document_id"]]
