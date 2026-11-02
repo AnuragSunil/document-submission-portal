@@ -110,11 +110,28 @@ Resources:
         deadLetterTargetArn: !GetAtt ProcessingDLQ.Arn
         maxReceiveCount: 3
 
-  QueueTransportPolicy:
+  ProcessingQueuePolicy:
     Type: AWS::SQS::QueuePolicy
     Properties:
       Queues:
         - !Ref ProcessingQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonSSLTLSRequests
+            Effect: Deny
+            # Principal: '*' is safe because this is an explicit Deny policy restricting insecure transport
+            Principal: '*'
+            Action: 'sqs:*'
+            Resource: !GetAtt ProcessingQueue.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  ProcessingDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
         - !Ref ProcessingDLQ
       PolicyDocument:
         Version: '2012-10-17'
@@ -124,9 +141,7 @@ Resources:
             # Principal: '*' is safe because this is an explicit Deny policy restricting insecure transport
             Principal: '*'
             Action: 'sqs:*'
-            Resource:
-              - !GetAtt ProcessingQueue.Arn
-              - !GetAtt ProcessingDLQ.Arn
+            Resource: !GetAtt ProcessingDLQ.Arn
             Condition:
               Bool:
                 aws:SecureTransport: 'false'

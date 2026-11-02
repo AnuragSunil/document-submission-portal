@@ -1,4 +1,4 @@
-﻿AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: '2010-09-09'
 Description: >
   CI/CD Stack for Document Submission Portal.
   Provisions ECR repository for backend container images, GitHub Actions OIDC provider,
