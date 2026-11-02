@@ -82,7 +82,7 @@ jobs:
 
   deploy:
     name: Deploy to Amazon ECS Fargate
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (vars.DEPLOY_ENABLED == 'true' || secrets.DEPLOY_ENABLED == 'true')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
     needs: [build-and-push]
     runs-on: ubuntu-latest
     steps:
