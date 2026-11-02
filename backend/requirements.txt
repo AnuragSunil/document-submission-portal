@@ -1,0 +1,9 @@
+# FastAPI & ASGI dependencies
+fastapi==0.115.11
+uvicorn==0.34.0
+pydantic==2.10.6
+boto3==1.37.9
+psycopg2-binary==2.9.10
+python-multipart==0.0.20
+pytest==8.3.5
+httpx==0.28.1

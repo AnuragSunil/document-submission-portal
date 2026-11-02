@@ -1,0 +1,3 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Data Stack for Document Submission Portal (RDS PostgreSQL, S3, Secrets Manager) - Placeholder
+Resources: {}
