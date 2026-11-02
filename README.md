@@ -1,28 +1,41 @@
 # Document Submission Portal
 
-A cloud-native AWS solution for document submission and processing, built with tiered security and infrastructure-as-code.
+A cloud-native AWS solution for secure document submission and processing, built with tiered security and infrastructure-as-code.
+
+> For full architectural details, step-by-step commands, and current status, see **[`PROJECT_OVERVIEW.md`](PROJECT_OVERVIEW.md)**.
+
+---
 
 ## Repository Structure
 
 ```
 document-submission-portal/
 ├── frontend/                 # Upload form, dashboard, document list
-├── backend/                  # REST API, validation, S3 + RDS integration
-│   ├── tests/
-│   ├── Dockerfile
-│   └── requirements.txt      # Python dependencies
+├── backend/                  # REST API (FastAPI), validation, S3 + RDS integration
+│   ├── tests/                # Automated pytest suite (13 unit tests)
+│   ├── config.py             # Config & Secrets Manager loader
+│   ├── db.py                 # PostgreSQL connection & parameterized queries
+│   ├── s3.py                 # S3 upload, rollback & presigned URL generator
+│   ├── main.py               # REST API endpoints & background status processor
+│   ├── Dockerfile            # Python 3.12-slim non-root container definition
+│   ├── requirements.txt      # Production dependencies
+│   └── requirements-dev.txt  # Dev/test dependencies
 ├── infra/
-│   ├── network.yaml          # VPC, subnets, routes, security groups
-│   ├── data.yaml             # RDS, S3, secrets/log groups
-│   └── application.yaml      # ECR, ECS, ALB, task/service
+│   ├── network.yaml          # Base Network Stack (VPC, subnets, routes, tiered SGs)
+│   ├── data.yaml             # Data Stack (RDS PostgreSQL, S3, Secrets Manager, CloudWatch)
+│   ├── cicd.yaml             # CI/CD Stack (ECR, GitHub Actions OIDC provider & deploy role)
+│   └── application.yaml      # Application Stack (ECS Fargate, ALB, Target Group, Task Roles)
 ├── .github/workflows/
-│   ├── test-build-deploy.yml
+│   └── test-build-deploy.yml # CI/CD workflow (cfn-lint, pytest, ECR build/push, ECS deploy)
 ├── docs/
-│   ├── architecture.md
-│   ├── runbook.md
-│   └── teardown.md
+│   ├── architecture.md       # Architecture diagram & security topology
+│   ├── runbook.md            # Stack deployment runbook & Change Set inspection
+│   └── teardown.md           # Cleanup & deletion instructions
+├── PROJECT_OVERVIEW.md       # Comprehensive status & project reference
 └── README.md
 ```
+
+---
 
 ## Infrastructure Stacks
 
@@ -36,43 +49,43 @@ Provisions the base networking foundation:
   - `alb-sg`: HTTP (80) / HTTPS (443) from `0.0.0.0/0`
   - `ecs-sg`: App port inbound from `alb-sg` only
   - `rds-sg`: PostgreSQL (5432) inbound from `ecs-sg` only
-- Cross-stack outputs with `Export.Name` for VPC, subnets, and security groups.
+- Cross-stack exports with `dsp-network-*`.
+
+### 2. Data Stack (`infra/data.yaml`)
+Provisions persistent storage and database credentials:
+- Private S3 Documents Bucket with SSE-S3 encryption and HTTPS-only transport enforcement.
+- CloudWatch Log Group (`/ecs/dsp-backend`, 7-day retention).
+- Secrets Manager secret with automatic 32-character master password generation.
+- Amazon RDS PostgreSQL (`db.t4g.micro`, 20 GiB gp3, Single-AZ).
+- Cross-stack exports with `dsp-data-*`.
+
+### 3. CI/CD Stack (`infra/cicd.yaml`)
+Provisions container registry and keyless deployment role:
+- Amazon ECR repository (`dsp-backend`) with scan-on-push and 10-image lifecycle policy.
+- IAM OIDC Identity Provider (`token.actions.githubusercontent.com`).
+- Least-privilege IAM Deploy Role (`dsp-github-deploy-role`).
+- Cross-stack exports with `dsp-cicd-*`.
+
+### 4. Application Stack (`infra/application.yaml`)
+Provisions runtime container environment:
+- Amazon ECS Cluster (`dsp-cluster`).
+- Internet-facing Application Load Balancer with port 80 HTTP listener.
+- Target Group on port 8000 with shallow `/health` probe.
+- ECS Task Execution Role and scoped ECS Task Role.
+- ECS Fargate Task Definition and Service with zero VPC endpoint cost architecture (tasks in public subnets locked down by `ecs-sg`).
 
 ---
 
-## Tagging Strategy
+## Local Development & Testing
 
-We implement **resource-level tagging** directly within `infra/network.yaml` (`Project: !Ref EnvironmentName`), complemented by **stack-level tags** (`--tags Project=dsp`):
-- **Why Resource-Level Tags?** Specifying `Tags` in template properties guarantees tag enforcement directly in version control (Git), works regardless of the deployment tool (CLI, Terraform, SDK, CI/CD), and enables fine-grained per-resource naming and auditing.
-- **Why Stack-Level Tags?** Passing `--tags Project=dsp` during deployment automatically propagates to all supported CloudFormation resources, ensuring full consistency across stack resources.
+```powershell
+# Create virtual environment and install dependencies
+python -m venv .venv
+.\.venv\Scripts\pip install -r backend/requirements.txt -r backend/requirements-dev.txt
 
----
+# Run pytest unit test suite
+.\.venv\Scripts\pytest backend/tests
 
-## Safe CloudFormation Updates via Change Sets
-
-Never run blind updates against live production infrastructure. Always generate and inspect a **Change Set** prior to execution to verify that resources will undergo non-destructive in-place modification (`Modify`) rather than destructive replacement (`Replace`):
-
-```bash
-# 1. Create Change Set without executing
-aws cloudformation deploy \
-  --template-file infra/network.yaml \
-  --stack-name dsp-network \
-  --parameter-overrides EnvironmentName=dsp \
-  --tags Project=dsp \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --no-execute-changeset
-
-# 2. Inspect the Change Set
-aws cloudformation describe-change-set \
-  --stack-name dsp-network \
-  --change-set-name <ChangeSetName> \
-  --query "Changes[*].ResourceChange.{Action:Action,Replacement:Replacement,Resource:LogicalResourceId,Type:ResourceType}" \
-  --output table
-
-# Verify: Action must show 'Modify' and Replacement must NOT show 'True' on VPC/Subnets!
-
-# 3. Execute Change Set once verified
-aws cloudformation execute-change-set \
-  --stack-name dsp-network \
-  --change-set-name <ChangeSetName>
+# Run CloudFormation template linter
+cfn-lint infra/*.yaml
 ```
