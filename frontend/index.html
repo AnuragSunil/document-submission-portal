@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Document Submission Portal</title>
+  <style>
+    body { font-family: -apple-system, "Segoe UI", system-ui, sans-serif; max-width: 960px; margin: 0 auto; padding: 24px; color: #1f2328; }
+    h1 { font-size: 22px; }
+    section { background: #f7f8fa; border: 1px solid #e5e7eb; border-radius: 6px; padding: 16px; margin-bottom: 20px; }
+    label { display: block; margin: 8px 0 4px; font-size: 13px; color: #57606a; }
+    input, select, button { font: inherit; padding: 6px 8px; }
+    input[type=text], input[type=file], select { width: 100%; box-sizing: border-box; }
+    button { background: #3b82d4; color: #fff; border: 0; border-radius: 4px; cursor: pointer; margin-top: 12px; }
+    button.small { margin: 0 4px 0 0; padding: 3px 8px; font-size: 12px; }
+    #stats span { margin-right: 16px; }
+    #msg { margin-top: 8px; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e5e7eb; }
+    .toolbar { display: flex; gap: 8px; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Document Submission Portal</h1>
+
+  <section>
+    <h2>Upload a document</h2>
+    <form id="upload-form">
+      <label for="file">File (PDF, DOCX, PNG, JPG; max 10 MB)</label>
+      <input id="file" type="file" accept=".pdf,.docx,.png,.jpg,.jpeg" required>
+      <label for="document_type">Document type</label>
+      <input id="document_type" type="text" maxlength="60" required>
+      <label for="description">Description (optional)</label>
+      <input id="description" type="text" maxlength="500">
+      <button type="submit">Upload</button>
+      <div id="msg"></div>
+    </form>
+  </section>
+
+  <section>
+    <h2>Status</h2>
+    <div id="stats"></div>
+  </section>
+
+  <section>
+    <h2>Documents</h2>
+    <div class="toolbar">
+      <input id="search" type="text" placeholder="Search filename or description">
+      <select id="status-filter">
+        <option value="">All statuses</option>
+        <option>UPLOADED</option>
+        <option>PROCESSING</option>
+        <option>PROCESSED</option>
+        <option>FAILED</option>
+      </select>
+    </div>
+    <table>
+      <thead><tr><th>File</th><th>Type</th><th>Size</th><th>Status</th><th>Created</th><th></th></tr></thead>
+      <tbody id="docs"></tbody>
+    </table>
+  </section>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function cell(text) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      return td;
+    }
+
+    function actionButton(label, handler) {
+      const b = document.createElement("button");
+      b.className = "small";
+      b.textContent = label;
+      b.addEventListener("click", handler);
+      return b;
+    }
+
+    async function loadStats() {
+      const r = await fetch("/api/stats");
+      if (!r.ok) return;
+      const s = await r.json();
+      const box = $("stats");
+      box.textContent = "";
+      for (const k of ["total", "UPLOADED", "PROCESSING", "PROCESSED", "FAILED"]) {
+        const span = document.createElement("span");
+        span.textContent = k + ": " + s[k];
+        box.appendChild(span);
+      }
+    }
+
+    async function loadDocs() {
+      const p = new URLSearchParams();
+      if ($("search").value) p.set("search", $("search").value);
+      if ($("status-filter").value) p.set("status", $("status-filter").value);
+      const r = await fetch("/api/documents?" + p.toString());
+      if (!r.ok) return;
+      const docs = await r.json();
+      const body = $("docs");
+      body.textContent = "";
+      for (const d of docs) {
+        const tr = document.createElement("tr");
+        tr.appendChild(cell(d.original_filename));
+        tr.appendChild(cell(d.document_type));
+        tr.appendChild(cell((d.size_bytes / 1024).toFixed(1) + " KB"));
+        tr.appendChild(cell(d.status));
+        tr.appendChild(cell(new Date(d.created_at).toLocaleString()));
+        const actions = document.createElement("td");
+        actions.appendChild(actionButton("Download", async () => {
+          const res = await fetch("/api/documents/" + d.document_id + "/download");
+          if (res.ok) window.open((await res.json()).url, "_blank", "noopener");
+        }));
+        if (d.status === "FAILED") {
+          actions.appendChild(actionButton("Retry", async () => {
+            await fetch("/api/documents/" + d.document_id + "/retry", { method: "POST" });
+            refresh();
+          }));
+        }
+        tr.appendChild(actions);
+        body.appendChild(tr);
+      }
+    }
+
+    function refresh() { loadStats(); loadDocs(); }
+
+    $("upload-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData();
+      fd.append("file", $("file").files[0]);
+      fd.append("document_type", $("document_type").value);
+      if ($("description").value) fd.append("description", $("description").value);
+      $("msg").textContent = "Uploading...";
+      const r = await fetch("/api/documents", { method: "POST", body: fd });
+      if (r.ok) {
+        $("msg").textContent = "Uploaded.";
+        e.target.reset();
+      } else {
+        let detail = "Upload failed.";
+        try { detail = (await r.json()).detail || detail; } catch (_) {}
+        $("msg").textContent = detail;
+      }
+      refresh();
+    });
+
+    $("search").addEventListener("input", loadDocs);
+    $("status-filter").addEventListener("change", loadDocs);
+
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

@@ -55,7 +55,7 @@ app = FastAPI(
 
 
 class DocumentResponse(BaseModel):
-    document_id: str
+    document_id: uuid.UUID
     original_filename: str
     content_type: str
     size_bytes: int
