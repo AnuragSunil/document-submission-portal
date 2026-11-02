@@ -61,9 +61,9 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.ROLE_TO_ASSUME }}
-          aws-region: ${{ vars.AWS_REGION || 'ap-south-1' }}
-          audience: sts.amazonaws.com
+          role-to-assume: ${{ vars.ROLE_TO_ASSUME || secrets.ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'ap-south-1' }}
+          role-session-name: GitHubActions-DSP
 
       - name: Log in to Amazon ECR
         id: login-ecr
@@ -72,7 +72,7 @@ jobs:
       - name: Build and Push Docker Image
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          REPOSITORY: ${{ vars.ECR_REPOSITORY || 'dsp-backend' }}
+          REPOSITORY: ${{ vars.ECR_REPOSITORY || secrets.ECR_REPOSITORY || 'dsp-backend' }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           docker build -f backend/Dockerfile -t $REGISTRY/$REPOSITORY:$IMAGE_TAG -t $REGISTRY/$REPOSITORY:latest .
@@ -81,18 +81,18 @@ jobs:
 
   deploy:
     name: Deploy to Amazon ECS Fargate
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && (vars.DEPLOY_ENABLED == 'true' || secrets.DEPLOY_ENABLED == 'true')
     needs: [build-and-push]
     runs-on: ubuntu-latest
     steps:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.ROLE_TO_ASSUME }}
-          aws-region: ${{ vars.AWS_REGION || 'ap-south-1' }}
-          audience: sts.amazonaws.com
+          role-to-assume: ${{ vars.ROLE_TO_ASSUME || secrets.ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'ap-south-1' }}
+          role-session-name: GitHubActions-DSP
 
       - name: Trigger Rolling Deployment
         run: |
-          aws ecs update-service --cluster dsp-cluster --service dsp-service --force-new-deployment --region ${{ vars.AWS_REGION || 'ap-south-1' }}
-          aws ecs wait services-stable --cluster dsp-cluster --service dsp-service --region ${{ vars.AWS_REGION || 'ap-south-1' }}
+          aws ecs update-service --cluster dsp-cluster --service dsp-service --force-new-deployment --region ${{ vars.AWS_REGION || secrets.AWS_REGION || 'ap-south-1' }}
+          aws ecs wait services-stable --cluster dsp-cluster --service dsp-service --region ${{ vars.AWS_REGION || secrets.AWS_REGION || 'ap-south-1' }}
