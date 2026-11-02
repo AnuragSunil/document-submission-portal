@@ -54,7 +54,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     DeletionPolicy: Delete
     Properties:
-      LogGroupName: /ecs/dsp-backend
+      LogGroupName: !Sub "/ecs/${EnvironmentName}-backend"
       RetentionInDays: 7
 
   # =========================================================================
@@ -63,7 +63,7 @@ Resources:
   DBSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Description: Master credentials for Document Submission Portal RDS database
+      Description: !Sub "Master credentials for ${EnvironmentName} RDS database"
       GenerateSecretString:
         SecretStringTemplate: '{"username": "dspadmin"}'
         GenerateStringKey: password
