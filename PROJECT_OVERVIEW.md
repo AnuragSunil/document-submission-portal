@@ -1,4 +1,4 @@
-﻿# Document Submission Portal — Complete Project Reference & Status
+# Document Submission Portal — Complete Project Reference & Status
 
 Technical reference, current status, architecture decisions and operations guide for the **Document Submission Portal** AWS capstone project.
 
