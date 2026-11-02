@@ -1,3 +1,142 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Data Stack for Document Submission Portal (RDS PostgreSQL, S3, Secrets Manager) - Placeholder
-Resources: {}
+Description: >
+  Data Stack for Document Submission Portal.
+  Provisions S3 documents bucket with HTTPS-only policy, CloudWatch log group,
+  Secrets Manager database credentials, DB subnet group, and RDS PostgreSQL instance.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: dsp
+    Description: Environment name prefix.
+
+Resources:
+  # =========================================================================
+  # S3 Documents Storage & Security Policy
+  # =========================================================================
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  DocumentsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DocumentsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonSSLTLSRequests
+            Effect: Deny
+            # Principal: '*' is safe because this is an explicit Deny policy restricting insecure transport
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt DocumentsBucket.Arn
+              - !Sub '${DocumentsBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  # =========================================================================
+  # CloudWatch Logging
+  # =========================================================================
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: /ecs/dsp-backend
+      RetentionInDays: 7
+
+  # =========================================================================
+  # Database Credentials (Secrets Manager)
+  # =========================================================================
+  DBSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Master credentials for Document Submission Portal RDS database
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "dspadmin"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludePunctuation: true
+
+  # =========================================================================
+  # RDS PostgreSQL Database & Subnet Group
+  # =========================================================================
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnets for Document Submission Portal database
+      SubnetIds: !Split [',', !ImportValue dsp-network-PrivateSubnets]
+
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    Properties:
+      DBInstanceClass: db.t4g.micro
+      Engine: postgres
+      EngineVersion: '16.15'
+      AllocatedStorage: '20'
+      StorageType: gp3
+      DBName: dspdb
+      MasterUsername: !Sub '{{resolve:secretsmanager:${DBSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DBSecret}:SecretString:password}}'
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !ImportValue dsp-network-RDSSecurityGroup
+      MultiAZ: false
+      PubliclyAccessible: false
+      StorageEncrypted: true
+      BackupRetentionPeriod: 1
+      DeletionProtection: false
+
+  DBSecretTargetAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref DBSecret
+      TargetId: !Ref DBInstance
+      TargetType: AWS::RDS::DBInstance
+
+# =========================================================================
+# Outputs & Cross-Stack Exports
+# =========================================================================
+Outputs:
+  DocumentsBucketName:
+    Description: Name of S3 documents bucket
+    Value: !Ref DocumentsBucket
+    Export:
+      Name: dsp-data-DocumentsBucketName
+
+  DocumentsBucketArn:
+    Description: ARN of S3 documents bucket
+    Value: !GetAtt DocumentsBucket.Arn
+    Export:
+      Name: dsp-data-DocumentsBucketArn
+
+  DBSecretArn:
+    Description: ARN of Secrets Manager secret for database credentials
+    Value: !Ref DBSecret
+    Export:
+      Name: dsp-data-DBSecretArn
+
+  DBEndpoint:
+    Description: Endpoint address of RDS PostgreSQL instance
+    Value: !GetAtt DBInstance.Endpoint.Address
+    Export:
+      Name: dsp-data-DBEndpoint
+
+  AppLogGroupName:
+    Description: CloudWatch log group for ECS backend application logs
+    Value: !Ref AppLogGroup
+    Export:
+      Name: dsp-data-AppLogGroupName
