@@ -63,6 +63,7 @@ jobs:
         with:
           role-to-assume: ${{ vars.ROLE_TO_ASSUME || secrets.ROLE_TO_ASSUME }}
           aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'ap-south-1' }}
+          audience: sts.amazonaws.com
           role-session-name: GitHubActions-DSP
 
       - name: Log in to Amazon ECR
@@ -90,6 +91,7 @@ jobs:
         with:
           role-to-assume: ${{ vars.ROLE_TO_ASSUME || secrets.ROLE_TO_ASSUME }}
           aws-region: ${{ vars.AWS_REGION || secrets.AWS_REGION || 'ap-south-1' }}
+          audience: sts.amazonaws.com
           role-session-name: GitHubActions-DSP
 
       - name: Trigger Rolling Deployment
